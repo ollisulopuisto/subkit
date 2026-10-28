@@ -28,7 +28,7 @@ def format_ass(document: SubtitleDocument, subtitles: list[Subtitle]) -> str:
         prefix = metadata.get("ass_prefix")
         newline_token = metadata.get("ass_newline_token", "\\N")
         if not isinstance(line_index, int) or not isinstance(prefix, str):
-            raise ValueError("ASS subtitle is missing reconstruction metadata")
+            raise TypeError("ASS subtitle is missing reconstruction metadata")
         lines[line_index] = prefix + subtitle.text.replace("\n", newline_token)
     return "\n".join(lines) + "\n"
 

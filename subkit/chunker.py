@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 
 from subkit.config import ChunkConfig
@@ -96,7 +97,7 @@ def _split_by_time_gap(subtitles: list[Subtitle], threshold_ms: int) -> list[lis
     """Start a new group whenever the gap between consecutive subtitles exceeds threshold."""
     groups: list[list[Subtitle]] = [[subtitles[0]]]
 
-    for prev, curr in zip(subtitles, subtitles[1:], strict=False):
+    for prev, curr in itertools.pairwise(subtitles):
         gap = curr.start_ms - prev.end_ms
         if gap > threshold_ms:
             groups.append([curr])

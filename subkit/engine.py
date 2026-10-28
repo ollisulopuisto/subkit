@@ -167,7 +167,7 @@ class TranslationEngine:
                 return translations, new_terms
             except BudgetExhausted:
                 raise
-            except Exception as exc:  # transport/API errors
+            except Exception as exc:  # noqa: BLE001  # transport/API errors
                 last_err = exc
                 wait = cfg.retry_base_delay * (2**attempt)
                 logger.warning(
@@ -229,7 +229,7 @@ class TranslationEngine:
                     translated[i] = text
         except BudgetExhausted:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Compression retry failed: %s", exc)
         return translated
 

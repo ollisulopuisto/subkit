@@ -96,6 +96,7 @@ def embedded_sub_langs(video: Path) -> set[str]:
                 str(video),
             ],
             capture_output=True,
+            check=False,
             timeout=60,
         )
         if proc.returncode != 0:
@@ -191,6 +192,7 @@ def extract_embedded_srt(video: Path, lang: str) -> Path | None:
                 tmp,
             ],
             capture_output=True,
+            check=False,
             timeout=300,
         )
         if proc.returncode == 0 and Path(tmp).stat().st_size > 0:
@@ -238,6 +240,6 @@ def refresh_item(api_url: str, api_key: str, item_id: str, timeout: float = 30.0
             timeout=timeout,
         )
         return resp.status_code in (200, 204)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Jellyfin refresh failed for item %s: %s", item_id, exc)
         return False

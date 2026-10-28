@@ -92,7 +92,7 @@ def restore_tags(
             # shift later ones.
             inline_sorted = sorted(inline, key=lambda p: p[0], reverse=True)
             for orig_index, tag in inline_sorted:
-                insert_at = int(round(orig_index * ratio))
+                insert_at = round(orig_index * ratio)
                 insert_at = max(0, min(len(body), insert_at))
                 body = body[:insert_at] + tag + body[insert_at:]
 

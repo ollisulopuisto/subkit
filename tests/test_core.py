@@ -113,7 +113,7 @@ def test_dropped_id_falls_back_and_is_flagged():
     report = translate_document_sync(make_doc(), cfg(), MockProvider(drop_ids={dropped}))
     assert dropped in report.dropped_ids
     assert not report.ok
-    sub = [s for s in report.subtitles if s.id == dropped][0]
+    sub = next(s for s in report.subtitles if s.id == dropped)
     assert sub.text == doc.subtitles[1].text  # original kept
 
 
