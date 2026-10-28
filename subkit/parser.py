@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 # Matches "HH:MM:SS,mmm --> HH:MM:SS,mmm" (also tolerates "." as the fraction separator)
-_SRT_TIMESTAMP_RE = re.compile(
-    r"(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})"
-)
-_GENERIC_TIMESTAMP_RE = re.compile(
-    r"(?P<h>\d+):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<f>\d{2,3})"
-)
+_SRT_TIMESTAMP_RE = re.compile(r"(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})")
+_GENERIC_TIMESTAMP_RE = re.compile(r"(?P<h>\d+):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<f>\d{2,3})")
 
 
 @dataclass
@@ -135,9 +131,7 @@ def parse_ass(path: str | Path) -> SubtitleDocument:
             continue
 
         if lower.startswith("format:"):
-            format_fields = [
-                field.strip() for field in stripped.split(":", 1)[1].split(",")
-            ]
+            format_fields = [field.strip() for field in stripped.split(":", 1)[1].split(",")]
             continue
 
         if not lower.startswith("dialogue:"):
@@ -175,7 +169,7 @@ def _parse_ass_dialogue_line(
     if len(parts) != len(fields):
         return None
 
-    data = {field.lower(): value for field, value in zip(fields, parts)}
+    data = {field.lower(): value for field, value in zip(fields, parts, strict=False)}
     start = data.get("start", "").strip()
     end = data.get("end", "").strip()
     text = data.get("text")
@@ -231,4 +225,3 @@ def _detect_ass_newline_token(text: str) -> str:
 
 def _decode_ass_text(text: str) -> str:
     return text.replace("\\N", "\n").replace("\\n", "\n")
-

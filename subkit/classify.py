@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 import re
-from enum import Enum
 
 
-class LineKind(str, Enum):
+class LineKind(StrEnum):
     DIALOG = "dialog"
-    SOUND_CUE = "sound_cue"      # [music], [door slams]
-    STAGE_DIR = "stage_dir"      # (whispering), (laughing)
+    SOUND_CUE = "sound_cue"  # [music], [door slams]
+    STAGE_DIR = "stage_dir"  # (whispering), (laughing)
     SCREEN_TEXT = "screen_text"  # ALL CAPS titles, signs
-    LYRICS = "lyrics"            # ♪ ... ♪
+    LYRICS = "lyrics"  # ♪ ... ♪
 
 
 _SOUND_RE = re.compile(r"^\s*\[[^\[\]]+\]\s*$", re.DOTALL)

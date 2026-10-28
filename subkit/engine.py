@@ -19,10 +19,10 @@ concurrency.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from subkit.chunker import build_context_window, chunk_subtitles
@@ -62,7 +62,7 @@ def _extract_block(content: str, tag: str) -> str:
         return ""
     start = i + len(open_t)
     j = low.find(close_t, start)
-    return content[start:(j if j != -1 else len(content))].strip()
+    return content[start : (j if j != -1 else len(content))].strip()
 
 
 def _loads_object(text: str):
@@ -71,7 +71,7 @@ def _loads_object(text: str):
     if start == -1 or end < start:
         return None
     try:
-        return json.loads(text[start:end + 1])
+        return json.loads(text[start : end + 1])
     except (json.JSONDecodeError, ValueError):
         return None
 
@@ -94,8 +94,9 @@ def _parse_glossary(block: str) -> dict[str, str]:
     data = _loads_object(block)
     if not isinstance(data, dict):
         return {}
-    return {str(k).strip(): str(v).strip() for k, v in data.items()
-            if str(k).strip() and str(v).strip()}
+    return {
+        str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()
+    }
 
 
 def _char_budget(sub: Subtitle, cps_target: float, cps_min: int) -> int:
@@ -132,8 +133,9 @@ class TranslationEngine:
             await asyncio.sleep(cfg.request_delay)
         return await self.provider.chat(system, messages)
 
-    async def _chat_with_retries(self, system: str, messages: list[dict[str, str]],
-                                 expect_ids: list[int]) -> tuple[dict[int, str], dict[str, str]]:
+    async def _chat_with_retries(
+        self, system: str, messages: list[dict[str, str]], expect_ids: list[int]
+    ) -> tuple[dict[int, str], dict[str, str]]:
         """Call the provider; on unparsable or incomplete output, send one
         correction request. Retries transport errors with backoff."""
         cfg = self.cfg.translator
@@ -160,38 +162,54 @@ class TranslationEngine:
                 raise
             except Exception as exc:  # transport/API errors
                 last_err = exc
-                wait = cfg.retry_base_delay * (2 ** attempt)
-                logger.warning("Provider call failed (attempt %d): %s; retrying in %.1fs",
-                               attempt + 1, exc, wait)
+                wait = cfg.retry_base_delay * (2**attempt)
+                logger.warning(
+                    "Provider call failed (attempt %d): %s; retrying in %.1fs",
+                    attempt + 1,
+                    exc,
+                    wait,
+                )
                 await asyncio.sleep(wait)
         raise RuntimeError(f"Provider call failed after {cfg.max_retries} attempts: {last_err}")
 
-    def _build_user_message(self, payload: list[dict], context: list[Subtitle] | None,
-                            full_transcript: list[Subtitle] | None = None) -> str:
+    def _build_user_message(
+        self,
+        payload: list[dict],
+        context: list[Subtitle] | None,
+        full_transcript: list[Subtitle] | None = None,
+    ) -> str:
         cfg = self.cfg.translator
         parts = [f"TARGET LANGUAGE: {cfg.target_language}"]
         parts.append(f"SOURCE LANGUAGE: {cfg.source_language or 'auto-detect'}")
         parts.append(f"GLOSSARY: {json.dumps(self._glossary.entries, ensure_ascii=False)}")
         if full_transcript:
             ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full_transcript]
-            parts.append("FULL TRANSCRIPT (read-only, whole video for context; do NOT "
-                         "translate these, translate only SEGMENTS):\n"
-                         + json.dumps(ft, ensure_ascii=False))
+            parts.append(
+                "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
+                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
+            )
         elif context:
             ctx = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in context]
-            parts.append("CONTEXT (read-only, do NOT translate):\n"
-                         + json.dumps(ctx, ensure_ascii=False))
+            parts.append(
+                "CONTEXT (read-only, do NOT translate):\n" + json.dumps(ctx, ensure_ascii=False)
+            )
         parts.append("SEGMENTS:\n" + json.dumps(payload, ensure_ascii=False))
         return "\n".join(parts)
 
-    async def _compress_lines(self, by_id: dict[int, Subtitle], translated: dict[int, str],
-                              over: list[int]) -> dict[int, str]:
+    async def _compress_lines(
+        self, by_id: dict[int, Subtitle], translated: dict[int, str], over: list[int]
+    ) -> dict[int, str]:
         """One targeted retry asking the model to shorten over-budget lines."""
         cfg = self.cfg.translator
         lines = json.dumps(
-            [{"id": i, "text": translated[i],
-              "max_chars": _char_budget(by_id[i], cfg.cps_target, cfg.cps_min_chars)}
-             for i in over],
+            [
+                {
+                    "id": i,
+                    "text": translated[i],
+                    "max_chars": _char_budget(by_id[i], cfg.cps_target, cfg.cps_min_chars),
+                }
+                for i in over
+            ],
             ensure_ascii=False,
         )
         try:
@@ -209,8 +227,9 @@ class TranslationEngine:
             logger.warning("Compression retry failed: %s", exc)
         return translated
 
-    async def translate_document(self, doc: SubtitleDocument,
-                                 resume_id: str | None = None) -> RunReport:
+    async def translate_document(
+        self, doc: SubtitleDocument, resume_id: str | None = None
+    ) -> RunReport:
         cfg = self.cfg.translator
         chunks = chunk_subtitles(doc.subtitles, self.cfg.chunk)
         contexts = build_context_window(chunks, self.cfg.chunk.context_lines)
@@ -238,16 +257,16 @@ class TranslationEngine:
                     "or raise MAX_CONTEXT_CHARS deliberately."
                 )
 
-        for idx, (chunk, context) in enumerate(zip(chunks, contexts)):
+        for idx, (chunk, context) in enumerate(zip(chunks, contexts, strict=False)):
             if idx in done_chunks:
                 report.chunks_done += 1
                 continue
             kinds = [classify(s.text) for s in chunk]
             payload: list[dict] = []
-            for s, kind in zip(chunk, kinds):
-                if (kind in (LineKind.SOUND_CUE, LineKind.STAGE_DIR) and not cfg.translate_cues) or (
-                    kind == LineKind.LYRICS and not cfg.translate_lyrics
-                ):
+            for s, kind in zip(chunk, kinds, strict=False):
+                if (
+                    kind in (LineKind.SOUND_CUE, LineKind.STAGE_DIR) and not cfg.translate_cues
+                ) or (kind == LineKind.LYRICS and not cfg.translate_lyrics):
                     continue
                 item: dict = {"id": s.id, "text": s.text.replace("\n", " ")}
                 if s.speaker:
@@ -280,14 +299,20 @@ class TranslationEngine:
 
                 if cfg.enforce_cps:
                     over = [
-                        pid for pid in expect_ids
-                        if len(translated[pid]) > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars) * cfg.cps_tolerance
+                        pid
+                        for pid in expect_ids
+                        if len(translated[pid])
+                        > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars)
+                        * cfg.cps_tolerance
                     ]
                     if over:
                         translated = await self._compress_lines(by_id, translated, over)
                         still = [
-                            pid for pid in over
-                            if len(translated[pid]) > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars) * cfg.cps_tolerance
+                            pid
+                            for pid in over
+                            if len(translated[pid])
+                            > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars)
+                            * cfg.cps_tolerance
                         ]
                         report.cps_violations.extend(still)
 
@@ -295,24 +320,34 @@ class TranslationEngine:
                 # cheaper than a re-call; violations surface in the log.
                 if cfg.enforce_glossary and not self._glossary.is_empty:
                     for pid in expect_ids:
-                        violations = self._glossary.check_compliance(by_id[pid].text, translated[pid])
+                        violations = self._glossary.check_compliance(
+                            by_id[pid].text, translated[pid]
+                        )
                         if violations:
-                            logger.info("Chunk %d id %d: glossary terms not applied: %s",
-                                        idx, pid, violations)
+                            logger.info(
+                                "Chunk %d id %d: glossary terms not applied: %s",
+                                idx,
+                                pid,
+                                violations,
+                            )
 
                 results.update(translated)
 
             report.chunks_done += 1
             done_chunks.add(idx)
             if state_path:
-                _save_state(state_path, fingerprint, done_chunks, results,
-                            self._glossary.entries)
+                _save_state(state_path, fingerprint, done_chunks, results, self._glossary.entries)
             logger.info("Chunk %d/%d done", idx + 1, report.chunks_total)
 
         report.subtitles = [
-            Subtitle(id=s.id, start=s.start, end=s.end,
-                     text=results.get(s.id, s.text),
-                     speaker=s.speaker, metadata=s.metadata)
+            Subtitle(
+                id=s.id,
+                start=s.start,
+                end=s.end,
+                text=results.get(s.id, s.text),
+                speaker=s.speaker,
+                metadata=s.metadata,
+            )
             for s in doc.subtitles
         ]
         report.glossary = dict(self._glossary.entries)
@@ -321,7 +356,7 @@ class TranslationEngine:
         return report
 
 
-def _fingerprint(engine: "TranslationEngine", doc: SubtitleDocument) -> str:
+def _fingerprint(engine: TranslationEngine, doc: SubtitleDocument) -> str:
     """Resume state is only valid for exactly this source text + config. Any
     change to the subtitles, languages, provider/model/endpoint, static
     glossary or system prompt invalidates it."""
@@ -329,10 +364,14 @@ def _fingerprint(engine: "TranslationEngine", doc: SubtitleDocument) -> str:
     p = engine.cfg.provider
     h = hashlib.sha256()
     h.update("\n".join(f"{s.id}:{s.text}" for s in doc.subtitles).encode("utf-8"))
-    h.update(f"|{cfg.target_language}|{cfg.source_language}"
-             f"|{p.kind}|{p.model}|{p.base_url}|{p.thinking_level}".encode("utf-8"))
-    h.update(f"|{json.dumps(engine._glossary.entries, sort_keys=True, ensure_ascii=False)}"
-             f"|{SYSTEM_PROMPT}".encode("utf-8"))
+    h.update(
+        f"|{cfg.target_language}|{cfg.source_language}"
+        f"|{p.kind}|{p.model}|{p.base_url}|{p.thinking_level}".encode()
+    )
+    h.update(
+        f"|{json.dumps(engine._glossary.entries, sort_keys=True, ensure_ascii=False)}"
+        f"|{SYSTEM_PROMPT}".encode()
+    )
     return h.hexdigest()
 
 
@@ -351,11 +390,16 @@ def _load_state(path: Path, fingerprint: str) -> tuple[set[int], dict[int, str]]
         return set(), {}
     if data.get("fingerprint") != fingerprint:
         if data:
-            logger.warning("Ignoring stale status file %s: source text or translation "
-                           "config changed since it was written", path)
+            logger.warning(
+                "Ignoring stale status file %s: source text or translation "
+                "config changed since it was written",
+                path,
+            )
         return set(), {}
-    return (set(data.get("done_chunks", [])),
-            {int(k): str(v) for k, v in data.get("translations", {}).items()})
+    return (
+        set(data.get("done_chunks", [])),
+        {int(k): str(v) for k, v in data.get("translations", {}).items()},
+    )
 
 
 def _load_state_glossary(path: Path, fingerprint: str) -> dict[str, str]:
@@ -368,18 +412,30 @@ def _load_state_glossary(path: Path, fingerprint: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in (data.get("glossary") or {}).items()}
 
 
-def _save_state(path: Path, fingerprint: str, done_chunks: set[int],
-                results: dict[int, str], glossary: dict[str, str]) -> None:
+def _save_state(
+    path: Path,
+    fingerprint: str,
+    done_chunks: set[int],
+    results: dict[int, str],
+    glossary: dict[str, str],
+) -> None:
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({
-        "fingerprint": fingerprint,
-        "done_chunks": sorted(done_chunks),
-        "translations": {str(k): v for k, v in results.items()},
-        "glossary": glossary,
-    }, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "done_chunks": sorted(done_chunks),
+                "translations": {str(k): v for k, v in results.items()},
+                "glossary": glossary,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     tmp.replace(path)
 
 
-def translate_document_sync(doc: SubtitleDocument, cfg: AppConfig,
-                            provider: ChatProvider) -> RunReport:
+def translate_document_sync(
+    doc: SubtitleDocument, cfg: AppConfig, provider: ChatProvider
+) -> RunReport:
     return asyncio.run(TranslationEngine(cfg, provider).translate_document(doc))

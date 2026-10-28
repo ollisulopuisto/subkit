@@ -27,4 +27,6 @@ def transcribe_mlx(
         for s in result.sentences
         if s.text and s.text.strip()
     ]
-    return TranscriptResult(segments=segments, language=language or getattr(result, "language", None))
+    return TranscriptResult(
+        segments=segments, language=language or getattr(result, "language", None)
+    )

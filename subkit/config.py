@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+import os
 
 
 def _env(key: str, default: str | None = None) -> str | None:
@@ -46,6 +46,7 @@ class ProviderConfig:
         (OpenAI, llama.cpp / llama-swap, Ollama, ...). base_url required for
         non-OpenAI hosts; api_key optional for local endpoints.
     """
+
     kind: str = _env("SUBKIT_PROVIDER", "gemini")  # type: ignore[assignment]
     model: str = _env("SUBKIT_MODEL", "gemini-3.8-flash")  # type: ignore[assignment]
     api_key: str | None = _env("GEMINI_API_KEY") or _env("OPENAI_API_KEY")

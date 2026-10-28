@@ -1,17 +1,15 @@
 """Core tests with a mock provider - no API calls, no model downloads."""
 
 import json
-from pathlib import Path
 
 import pytest
 
 from subkit.chunker import build_context_window, chunk_subtitles
 from subkit.config import AppConfig
 from subkit.engine import TranslationEngine, translate_document_sync
-from subkit.glossary import Glossary
+from subkit.jellyfin import categorize_item, plan_library, sidecar_path, write_sidecar_atomic
+from subkit.merger import format_srt
 from subkit.parser import Subtitle, SubtitleDocument, parse_srt_content
-from subkit.jellyfin import (categorize_item, plan_library, sidecar_path,
-                             write_sidecar_atomic)
 
 SRT = """1
 00:00:01,000 --> 00:00:03,000
@@ -58,10 +56,15 @@ class MockProvider:
         else:
             payload = json.loads(user.split("SEGMENTS:\n", 1)[1])
             self._last_payload = payload
-        segs = [{"id": p["id"], "text": "FI:" + p["text"]}
-                for p in payload if p["id"] not in self.drop_ids]
-        return ("<glossary>" + json.dumps(self.new_terms) + "</glossary>\n"
-                "<translation>" + json.dumps({"segments": segs}) + "</translation>")
+        segs = [
+            {"id": p["id"], "text": "FI:" + p["text"]}
+            for p in payload
+            if p["id"] not in self.drop_ids
+        ]
+        return (
+            "<glossary>" + json.dumps(self.new_terms) + "</glossary>\n"
+            "<translation>" + json.dumps({"segments": segs}) + "</translation>"
+        )
 
 
 def cfg(**kw):
@@ -149,16 +152,20 @@ def test_gemini_request_shape(monkeypatch):
 
     class FakeResp:
         status_code = 200
+
         def json(self):
             return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
 
     class FakeClient:
         def __init__(self, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def post(self, url, json=None, headers=None):
             captured["url"] = url
             captured["body"] = json
@@ -168,6 +175,7 @@ def test_gemini_request_shape(monkeypatch):
     monkeypatch.setattr("subkit.providers.httpx.AsyncClient", FakeClient)
     p = GeminiProvider(ProviderConfig(kind="gemini", model="gemini-3.8-flash", api_key="k"))
     import asyncio
+
     out = asyncio.run(p.chat("SYS", [{"role": "user", "content": "hi"}]))
     assert out == "ok"
     assert captured["url"].endswith("/models/gemini-3.8-flash:generateContent")
@@ -178,7 +186,9 @@ def test_gemini_request_shape(monkeypatch):
 
 
 def test_categorize_matrix(tmp_path, monkeypatch):
-    no_embed = lambda v: set()
+    def no_embed(v):
+        return set()
+
     monkeypatch.setattr("subkit.jellyfin.embedded_sub_langs", no_embed)
     v = tmp_path / "Movie (2020).mkv"
     v.write_bytes(b"")
@@ -227,7 +237,7 @@ def test_sidecar_write_protection(tmp_path):
 
 
 def test_plan_library(tmp_path, monkeypatch):
-    (tmp_path / "a.mkv").write_bytes(b"")                      # nothing -> transcribe
+    (tmp_path / "a.mkv").write_bytes(b"")  # nothing -> transcribe
     (tmp_path / "b.mkv").write_bytes(b"")
     (tmp_path / "b.en.srt").write_text("x", encoding="utf-8")  # english -> translate
     (tmp_path / "c.mkv").write_bytes(b"")
@@ -262,11 +272,8 @@ def test_request_budget_stops_run():
     provider = MockProvider()
     c = cfg(max_requests=1)
     c.chunk.max_lines = 1  # 3 translatable cues -> 3 chunks, budget allows 1 call
-    try:
+    with pytest.raises(RuntimeError, match="budget"):
         translate_document_sync(make_doc(), c, provider)
-        assert False, "expected budget error"
-    except RuntimeError as exc:
-        assert "budget" in str(exc).lower()
 
 
 def test_resume_skips_done_chunks(tmp_path):
@@ -275,10 +282,9 @@ def test_resume_skips_done_chunks(tmp_path):
     c.chunk.max_lines = 2
     doc = make_doc()
     rid = str(tmp_path / "movie.srt")
-    report1 = translate_document_sync(doc, c, provider, ) if False else None
     import asyncio
-    report1 = asyncio.run(TranslationEngine(c, provider).translate_document(doc, resume_id=rid))
-    calls_after_first = len(provider.calls)
+
+    asyncio.run(TranslationEngine(c, provider).translate_document(doc, resume_id=rid))
     assert (tmp_path / "movie.srt.subkit-status.json").exists()
     provider2 = MockProvider()
     report2 = asyncio.run(TranslationEngine(c, provider2).translate_document(doc, resume_id=rid))
@@ -288,6 +294,7 @@ def test_resume_skips_done_chunks(tmp_path):
 
 def test_resume_invalidated_on_language_change(tmp_path):
     import asyncio
+
     c = cfg(status_dir=str(tmp_path))
     rid = str(tmp_path / "m.srt")
     p1 = MockProvider()
@@ -301,6 +308,7 @@ def test_resume_invalidated_on_language_change(tmp_path):
 
 def test_resume_invalidated_on_source_change(tmp_path):
     import asyncio
+
     c = cfg(status_dir=str(tmp_path))
     rid = str(tmp_path / "m.srt")
     p1 = MockProvider()
@@ -314,6 +322,7 @@ def test_resume_invalidated_on_source_change(tmp_path):
 
 def test_resume_invalidated_on_model_change(tmp_path):
     import asyncio
+
     c = cfg(status_dir=str(tmp_path))
     rid = str(tmp_path / "m.srt")
     asyncio.run(TranslationEngine(c, MockProvider()).translate_document(make_doc(), resume_id=rid))
@@ -326,14 +335,12 @@ def test_resume_invalidated_on_model_change(tmp_path):
 
 def test_budget_counts_correction_calls(tmp_path):
     from subkit.engine import BudgetExhausted
+
     provider = MockProvider(garbage_first=True)  # needs original + correction call
     c = cfg(max_requests=1)
-    try:
+    with pytest.raises(BudgetExhausted):
         translate_document_sync(make_doc(), c, provider)
-        assert False, "expected BudgetExhausted"
-    except BudgetExhausted:
-        pass
-    assert len(provider.calls) == 1  # stopped before spending the correction call... 
+    assert len(provider.calls) == 1  # stopped before spending the correction call...
     # budget allowed 1 call; correction would be call 2 -> blocked
 
 
@@ -348,38 +355,59 @@ def test_budget_counts_compression_calls():
 
     provider = WordyProvider()
     c = cfg(max_requests=1, cps_target=5.0, cps_min_chars=5, cps_tolerance=1.0)
-    try:
+    with pytest.raises(BudgetExhausted):
         translate_document_sync(make_doc(), c, provider)
-        assert False, "expected BudgetExhausted from compression call"
-    except BudgetExhausted:
-        pass
 
 
 def test_context_budget_fails_before_sending():
     provider = MockProvider()
     c = cfg(max_context_chars=10)  # any real transcript exceeds this
-    try:
+    with pytest.raises(RuntimeError, match="MAX_CONTEXT_CHARS"):
         translate_document_sync(make_doc(), c, provider)
-        assert False, "expected context budget error"
-    except RuntimeError as exc:
-        assert "MAX_CONTEXT_CHARS" in str(exc)
     assert provider.calls == [], "provider must not be called when over context budget"
 
 
 def test_gemini_thinking_auto_omit_on_non3x(monkeypatch):
     from subkit.config import ProviderConfig
     from subkit.providers import GeminiProvider
+
     monkeypatch.delenv("GEMINI_THINKING_LEVEL", raising=False)
-    p = GeminiProvider(ProviderConfig(kind="gemini", model="gemini-2.5-flash",
-                                      api_key="k", thinking_level="low"))
+    p = GeminiProvider(
+        ProviderConfig(kind="gemini", model="gemini-2.5-flash", api_key="k", thinking_level="low")
+    )
     assert p._cfg.thinking_level == "off", "default thinking must auto-omit on non-3.x"
 
 
 def test_gemini_thinking_explicit_on_non3x_is_clean_error(monkeypatch):
     from subkit.config import ProviderConfig
     from subkit.providers import GeminiProvider
+
     monkeypatch.setenv("GEMINI_THINKING_LEVEL", "low")
     with pytest.raises(ValueError) as ei:
-        GeminiProvider(ProviderConfig(kind="gemini", model="gemini-2.5-flash",
-                                      api_key="k", thinking_level="low"))
+        GeminiProvider(
+            ProviderConfig(
+                kind="gemini", model="gemini-2.5-flash", api_key="k", thinking_level="low"
+            )
+        )
     assert "GEMINI_THINKING_LEVEL=off" in str(ei.value)
+
+
+def test_format_srt_empty_list():
+    assert format_srt([]) == ""
+
+
+def test_format_srt_single_subtitle():
+    subs = [Subtitle(id=1, start="00:00:01,000", end="00:00:03,000", text="Hello there.")]
+    assert format_srt(subs) == "1\n00:00:01,000 --> 00:00:03,000\nHello there.\n"
+
+
+def test_format_srt_multiline_text_is_collapsed():
+    subs = [
+        Subtitle(
+            id=2,
+            start="00:00:03,500",
+            end="00:00:05,000",
+            text="Line one\nLine two",
+        )
+    ]
+    assert format_srt(subs) == "2\n00:00:03,500 --> 00:00:05,000\nLine one Line two\n"

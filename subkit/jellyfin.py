@@ -19,13 +19,13 @@ a file this tool did not create.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import logging
 import os
+from pathlib import Path
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,10 @@ def sidecar_path(video: Path, lang: str, generated_marker: bool = True) -> Path:
 
 def _sidecar_lang_tokens(video: Path, sub: Path) -> list[str]:
     """Tokens after the video base name: 'Movie.fi.generated.srt' -> ['fi','generated']."""
-    tail = sub.name[len(video.stem):]  # '.fi.generated.srt'
-    return [t.lower() for t in tail.split(".") if t and t.lower() not in SUBTITLE_EXTENSIONS and t != ""]
+    tail = sub.name[len(video.stem) :]  # '.fi.generated.srt'
+    return [
+        t.lower() for t in tail.split(".") if t and t.lower() not in SUBTITLE_EXTENSIONS and t != ""
+    ]
 
 
 def existing_sidecars(video: Path) -> list[Path]:
@@ -62,9 +64,9 @@ def existing_sidecars(video: Path) -> list[Path]:
     if not video.parent.exists():
         return []
     return [
-        p for p in video.parent.iterdir()
-        if p.is_file() and p.suffix.lower() in SUBTITLE_EXTENSIONS
-        and p.name.startswith(base + ".")
+        p
+        for p in video.parent.iterdir()
+        if p.is_file() and p.suffix.lower() in SUBTITLE_EXTENSIONS and p.name.startswith(base + ".")
     ]
 
 
@@ -81,9 +83,20 @@ def embedded_sub_langs(video: Path) -> set[str]:
     """Languages of embedded subtitle streams, via ffprobe."""
     try:
         proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "s",
-             "-show_entries", "stream_tags=language", "-of", "json", str(video)],
-            capture_output=True, timeout=60,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream_tags=language",
+                "-of",
+                "json",
+                str(video),
+            ],
+            capture_output=True,
+            timeout=60,
         )
         if proc.returncode != 0:
             logger.warning("ffprobe failed on %s", video)
@@ -100,8 +113,9 @@ def embedded_sub_langs(video: Path) -> set[str]:
     return langs
 
 
-def categorize_item(video: Path, target_lang: str, source_lang: str = "en",
-                    force: bool = False) -> str:
+def categorize_item(
+    video: Path, target_lang: str, source_lang: str = "en", force: bool = False
+) -> str:
     """-> "skip" | "translate" | "transcribe"."""
     target_codes = lang_codes(target_lang)
     gen = sidecar_path(video, target_lang, generated_marker=True)
@@ -128,17 +142,20 @@ def item_needs_work(video: Path, lang: str, force: bool = False) -> bool:
 
 @dataclass
 class LibraryPlan:
-    translate: list[Path] = field(default_factory=list)   # source subs exist
+    translate: list[Path] = field(default_factory=list)  # source subs exist
     transcribe: list[Path] = field(default_factory=list)  # need ASR
     skipped: list[Path] = field(default_factory=list)
 
     def summary(self) -> str:
-        return (f"{len(self.translate)} to translate, {len(self.transcribe)} to transcribe, "
-                f"{len(self.skipped)} already covered")
+        return (
+            f"{len(self.translate)} to translate, {len(self.transcribe)} to transcribe, "
+            f"{len(self.skipped)} already covered"
+        )
 
 
-def plan_library(root: Path, target_lang: str, source_lang: str = "en",
-                 force: bool = False) -> LibraryPlan:
+def plan_library(
+    root: Path, target_lang: str, source_lang: str = "en", force: bool = False
+) -> LibraryPlan:
     plan = LibraryPlan()
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -162,9 +179,19 @@ def extract_embedded_srt(video: Path, lang: str) -> Path | None:
         fd, tmp = tempfile.mkstemp(prefix=".subkit-src-", suffix=".srt")
         os.close(fd)
         proc = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(video),
-             "-map", f"0:s:m:language:{code}", tmp],
-            capture_output=True, timeout=300,
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(video),
+                "-map",
+                f"0:s:m:language:{code}",
+                tmp,
+            ],
+            capture_output=True,
+            timeout=300,
         )
         if proc.returncode == 0 and Path(tmp).stat().st_size > 0:
             return Path(tmp)
@@ -173,8 +200,9 @@ def extract_embedded_srt(video: Path, lang: str) -> Path | None:
     return None
 
 
-def write_sidecar_atomic(video: Path, lang: str, content: str,
-                         generated_marker: bool = True, force: bool = False) -> Path:
+def write_sidecar_atomic(
+    video: Path, lang: str, content: str, generated_marker: bool = True, force: bool = False
+) -> Path:
     """Write the sidecar atomically. An existing target is only replaced when
     force=True AND the target is one of our `.generated` files - user-owned
     subtitles are never overwritten."""
@@ -201,8 +229,12 @@ def refresh_item(api_url: str, api_key: str, item_id: str, timeout: float = 30.0
         resp = httpx.post(
             f"{api_url.rstrip('/')}/Items/{item_id}/Refresh",
             headers={"X-Emby-Token": api_key},
-            params={"metadataRefreshMode": "Default", "imageRefreshMode": "None",
-                    "replaceAllMetadata": "false", "replaceAllImages": "false"},
+            params={
+                "metadataRefreshMode": "Default",
+                "imageRefreshMode": "None",
+                "replaceAllMetadata": "false",
+                "replaceAllImages": "false",
+            },
             timeout=timeout,
         )
         return resp.status_code in (200, 204)

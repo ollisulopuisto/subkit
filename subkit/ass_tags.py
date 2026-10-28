@@ -21,7 +21,13 @@ import re
 _ASS_TAG_RE = re.compile(r"\{[^}]+\}")
 
 _POSITIONAL_PREFIXES: tuple[str, ...] = (
-    "{\\pos(", "{\\move(", "{\\org(", "{\\an", "{\\fad(", "{\\fade(", "{\\clip(",
+    "{\\pos(",
+    "{\\move(",
+    "{\\org(",
+    "{\\an",
+    "{\\fad(",
+    "{\\fade(",
+    "{\\clip(",
 )
 
 
@@ -43,7 +49,7 @@ def strip_tags(text: str) -> tuple[str, list[tuple[int, str]]]:
     pos = 0
     clean_len = 0
     for m in _ASS_TAG_RE.finditer(text):
-        chunk = text[pos:m.start()]
+        chunk = text[pos : m.start()]
         parts.append(chunk)
         clean_len += len(chunk)
         tags.append((clean_len, m.group()))

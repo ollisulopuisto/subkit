@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python with uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies (with dev extras)
+        run: uv sync --extra dev
+
+      - name: Run ruff lint
+        run: ruff check subkit/ tests/
+
+      - name: Run ruff format check
+        run: ruff format --check subkit/ tests/
+
+      - name: Run pytest
+        run: uv run pytest tests/

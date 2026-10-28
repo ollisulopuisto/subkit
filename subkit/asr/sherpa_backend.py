@@ -107,27 +107,30 @@ def transcribe_sherpa(
     def drain() -> None:
         while not vad.empty():
             seg = vad.front()
-            windows.append((seg.start / sample_rate,
-                            (seg.start + len(seg.samples)) / sample_rate))
+            windows.append((seg.start / sample_rate, (seg.start + len(seg.samples)) / sample_rate))
             vad.pop()
 
     feed = int(_FEED_SEC * sample_rate)
     for i in range(0, samples.size, feed):
-        vad.accept_waveform(samples[i:i + feed])
+        vad.accept_waveform(samples[i : i + feed])
         drain()
     vad.flush()
     drain()
 
     merged: list[list[float]] = []
     for start, end in windows:
-        if merged and start - merged[-1][1] <= _MERGE_GAP_SEC and end - merged[-1][0] <= _MAX_SEGMENT_SEC:
+        if (
+            merged
+            and start - merged[-1][1] <= _MERGE_GAP_SEC
+            and end - merged[-1][0] <= _MAX_SEGMENT_SEC
+        ):
             merged[-1][1] = end
         else:
             merged.append([start, end])
 
     segments: list[Segment] = []
     for start, end in merged:
-        clip = samples[int(start * sample_rate):int(end * sample_rate)]
+        clip = samples[int(start * sample_rate) : int(end * sample_rate)]
         if clip.size == 0:
             continue
         stream = recognizer.create_stream()

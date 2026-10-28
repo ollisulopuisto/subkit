@@ -14,21 +14,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import sys
 from pathlib import Path
+import sys
 
 from subkit.config import AppConfig
 from subkit.engine import TranslationEngine
-from subkit.jellyfin import (categorize_item, extract_embedded_srt,
-                             plan_library, sidecar_covers_lang,
-                             write_sidecar_atomic)
+from subkit.jellyfin import (
+    extract_embedded_srt,
+    plan_library,
+    sidecar_covers_lang,
+    write_sidecar_atomic,
+)
 from subkit.merger import format_srt, write_subtitle_file
 from subkit.parser import Subtitle, SubtitleDocument, parse_subtitle_file
 from subkit.providers import build_provider
 
 
 def _segments_to_doc(segments) -> SubtitleDocument:
-    from subkit.asr.base import Segment
 
     def fmt(sec: float) -> str:
         ms = max(0, int(round(sec * 1000)))
@@ -47,12 +49,16 @@ def _segments_to_doc(segments) -> SubtitleDocument:
 def _report(report, out_path: Path | None) -> None:
     print(f"chunks: {report.chunks_done}/{report.chunks_total}")
     if report.dropped_ids:
-        print(f"INCOMPLETE: {len(report.dropped_ids)} cues kept the original "
-              f"text (model returned no translation): ids {report.dropped_ids[:50]}"
-              + (" ..." if len(report.dropped_ids) > 50 else ""))
+        print(
+            f"INCOMPLETE: {len(report.dropped_ids)} cues kept the original "
+            f"text (model returned no translation): ids {report.dropped_ids[:50]}"
+            + (" ..." if len(report.dropped_ids) > 50 else "")
+        )
     if report.cps_violations:
-        print(f"reading-speed: {len(report.cps_violations)} cues still over budget "
-              f"after compression retry: ids {report.cps_violations[:50]}")
+        print(
+            f"reading-speed: {len(report.cps_violations)} cues still over budget "
+            f"after compression retry: ids {report.cps_violations[:50]}"
+        )
     if report.glossary:
         print(f"glossary: {len(report.glossary)} terms")
     if out_path:
@@ -72,8 +78,11 @@ def cmd_translate(args: argparse.Namespace) -> int:
     report = asyncio.run(
         TranslationEngine(cfg, provider).translate_document(doc, resume_id=args.input)
     )
-    out = Path(args.output) if args.output else Path(args.input).with_suffix(
-        f".{args.target_code or args.target.lower()}.srt")
+    out = (
+        Path(args.output)
+        if args.output
+        else Path(args.input).with_suffix(f".{args.target_code or args.target.lower()}.srt")
+    )
     write_subtitle_file(doc, report.subtitles, out)
     _report(report, out)
     return 0 if report.ok else 2
@@ -87,8 +96,11 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
         if not args.model_dir or not args.vad_model:
             print("sherpa engine needs --model-dir and --vad-model", file=sys.stderr)
             return 1
-        kwargs = {"model_dir": args.model_dir, "vad_model": args.vad_model,
-                  "num_threads": args.threads}
+        kwargs = {
+            "model_dir": args.model_dir,
+            "vad_model": args.vad_model,
+            "num_threads": args.threads,
+        }
     else:
         kwargs = {"model": args.model}
     result = transcribe(args.input, engine=args.engine, language=args.language, **kwargs)
@@ -124,14 +136,20 @@ def cmd_library(args: argparse.Namespace) -> int:
                 print(f"INCOMPLETE {video.name}: {len(report.dropped_ids)} cues kept original text")
         else:
             subs = doc.subtitles
-        out = write_sidecar_atomic(video, args.target_code, format_srt(subs),
-                                   generated_marker=not args.no_generated_marker,
-                                   force=args.force)
+        out = write_sidecar_atomic(
+            video,
+            args.target_code,
+            format_srt(subs),
+            generated_marker=not args.no_generated_marker,
+            force=args.force,
+        )
         print(f"wrote: {out}")
 
     if plan.transcribe and not args.transcribe_engine:
-        print(f"NOTE: {len(plan.transcribe)} items have no source subtitles and need ASR; "
-              "pass --transcribe-engine sherpa (or mlx) to process them")
+        print(
+            f"NOTE: {len(plan.transcribe)} items have no source subtitles and need ASR; "
+            "pass --transcribe-engine sherpa (or mlx) to process them"
+        )
 
     for video in plan.translate:
         try:
@@ -161,9 +179,16 @@ def cmd_library(args: argparse.Namespace) -> int:
         for video in plan.transcribe:
             try:
                 from subkit.asr.base import transcribe
-                kwargs = ({"model_dir": args.model_dir, "vad_model": args.vad_model,
-                           "num_threads": args.threads}
-                          if args.transcribe_engine == "sherpa" else {})
+
+                kwargs = (
+                    {
+                        "model_dir": args.model_dir,
+                        "vad_model": args.vad_model,
+                        "num_threads": args.threads,
+                    }
+                    if args.transcribe_engine == "sherpa"
+                    else {}
+                )
                 result = transcribe(str(video), engine=args.transcribe_engine, **kwargs)
                 doc = _segments_to_doc(result.segments)
                 finish(video, doc, str(video))
@@ -184,7 +209,9 @@ def main() -> int:
     t.add_argument("--target-code", default="fi")
     t.add_argument("--source", default=None)
     t.add_argument("--glossary", default=None, help="static per-series glossary JSON")
-    t.add_argument("--save-glossary", default=None, help="write the rolling glossary here after the run")
+    t.add_argument(
+        "--save-glossary", default=None, help="write the rolling glossary here after the run"
+    )
     t.set_defaults(func=cmd_translate)
 
     tr = sub.add_parser("transcribe", help="transcribe media to a subtitle file")
@@ -193,8 +220,9 @@ def main() -> int:
     tr.add_argument("--engine", choices=["sherpa", "mlx"], default="sherpa")
     tr.add_argument("--model-dir", help="sherpa-onnx model directory (Orukeet/Parakeet INT8)")
     tr.add_argument("--vad-model", help="silero VAD .onnx path")
-    tr.add_argument("--model", default="mlx-community/parakeet-tdt-0.6b-v3",
-                    help="mlx engine model id")
+    tr.add_argument(
+        "--model", default="mlx-community/parakeet-tdt-0.6b-v3", help="mlx engine model id"
+    )
     tr.add_argument("--threads", type=int, default=4)
     tr.add_argument("--language", default=None)
     tr.set_defaults(func=cmd_transcribe)
@@ -203,24 +231,38 @@ def main() -> int:
     li.add_argument("root")
     li.add_argument("--target", default="Finnish")
     li.add_argument("--target-code", default="fi")
-    li.add_argument("--source-code", default="en",
-                    help="source subtitle language to translate from when present")
-    li.add_argument("--translate", action="store_true",
-                    help="translate source subtitles (and transcripts) to the target language")
+    li.add_argument(
+        "--source-code",
+        default="en",
+        help="source subtitle language to translate from when present",
+    )
+    li.add_argument(
+        "--translate",
+        action="store_true",
+        help="translate source subtitles (and transcripts) to the target language",
+    )
     li.add_argument("--transcribe-engine", choices=["sherpa", "mlx"], default=None)
     li.add_argument("--model-dir")
     li.add_argument("--vad-model")
     li.add_argument("--threads", type=int, default=4)
-    li.add_argument("--force", action="store_true",
-                    help="regenerate subkit-written (.generated) subs; never overwrites user-owned subtitles")
-    li.add_argument("--no-generated-marker", action="store_true",
-                    help="name output Name.fi.srt instead of Name.fi.generated.srt")
+    li.add_argument(
+        "--force",
+        action="store_true",
+        help="regenerate subkit-written (.generated) subs; never overwrites user-owned subtitles",
+    )
+    li.add_argument(
+        "--no-generated-marker",
+        action="store_true",
+        help="name output Name.fi.srt instead of Name.fi.generated.srt",
+    )
     li.add_argument("--dry-run", action="store_true")
     li.set_defaults(func=cmd_library)
 
     args = ap.parse_args()
-    logging.basicConfig(level=getattr(logging, AppConfig().translator.log_level, logging.INFO),
-                        format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, AppConfig().translator.log_level, logging.INFO),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
     try:
         return args.func(args)
     except (ValueError, FileNotFoundError) as exc:

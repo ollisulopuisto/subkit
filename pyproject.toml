@@ -21,3 +21,21 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["subkit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["subkit"]
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "I", "B", "C4", "UP", "RUF100", "RUF022"]
+ignore = ["E501", "B008", "B018"]
+unfixable = ["F401"]
+dummy-variable-rgx = "^(_+|unused|dummy)$"
+
+[tool.ruff.lint.isort]
+known-first-party = ["subkit"]
+force-sort-within-sections = true
+
+[tool.ruff.format]
+docstring-code-format = true

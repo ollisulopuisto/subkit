@@ -26,7 +26,7 @@ class Glossary:
         self._entries: dict[str, str] = dict(entries or {})
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "Glossary":
+    def from_file(cls, path: str | Path) -> Glossary:
         p = Path(path)
         if not p.exists():
             logger.warning("Glossary file not found: %s - using empty glossary", p)

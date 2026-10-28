@@ -36,7 +36,9 @@ def chunk_subtitles(
 
     logger.info(
         "Chunked %d subtitles → %d dialogue groups → %d sized chunks",
-        len(subtitles), len(dialogue_groups), len(sized_chunks),
+        len(subtitles),
+        len(dialogue_groups),
+        len(sized_chunks),
     )
 
     return sized_chunks
@@ -63,9 +65,7 @@ def build_context_window(
 # -- Internal helpers --
 
 
-def _adaptive_limits(
-    group: list[Subtitle], cfg: ChunkConfig
-) -> tuple[int, int]:
+def _adaptive_limits(group: list[Subtitle], cfg: ChunkConfig) -> tuple[int, int]:
     """
     Dynamically adjust chunk size based on text density.
     Short lines → allow more lines per chunk.
@@ -92,13 +92,11 @@ def _adaptive_limits(
     return adapted_lines, adapted_chars
 
 
-def _split_by_time_gap(
-    subtitles: list[Subtitle], threshold_ms: int
-) -> list[list[Subtitle]]:
+def _split_by_time_gap(subtitles: list[Subtitle], threshold_ms: int) -> list[list[Subtitle]]:
     """Start a new group whenever the gap between consecutive subtitles exceeds threshold."""
     groups: list[list[Subtitle]] = [[subtitles[0]]]
 
-    for prev, curr in zip(subtitles, subtitles[1:]):
+    for prev, curr in zip(subtitles, subtitles[1:], strict=False):
         gap = curr.start_ms - prev.end_ms
         if gap > threshold_ms:
             groups.append([curr])
@@ -108,9 +106,7 @@ def _split_by_time_gap(
     return groups
 
 
-def _split_by_size(
-    group: list[Subtitle], max_lines: int, max_chars: int
-) -> list[list[Subtitle]]:
+def _split_by_size(group: list[Subtitle], max_lines: int, max_chars: int) -> list[list[Subtitle]]:
     """Break a group further if it exceeds line or character limits."""
     chunks: list[list[Subtitle]] = []
     current: list[Subtitle] = []
@@ -126,11 +122,7 @@ def _split_by_size(
             # Avoid splitting a Q/A turn across chunks: if the previous line
             # ends with a question mark and this line is the dash-prefixed
             # response, keep them together (allow 1 line of overrun).
-            if (
-                current
-                and _is_qa_continuation(current[-1], sub)
-                and len(current) <= max_lines
-            ):
+            if current and _is_qa_continuation(current[-1], sub) and len(current) <= max_lines:
                 current.append(sub)
                 current_chars += sub_chars
                 continue

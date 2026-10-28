@@ -42,6 +42,7 @@ class GeminiProvider:
         # set it for a non-3.x model, fail with a clean config error; if it is
         # just the default, auto-omit it instead of sending a rejected field.
         import os
+
         level = (cfg.thinking_level or "").lower()
         wants_thinking = level not in ("", "default", "off", "none")
         is_gemini3 = "gemini-3" in cfg.model.lower()
@@ -76,16 +77,12 @@ class GeminiProvider:
         # Thinking level is supported by Gemini 3.x Flash; older models may
         # reject it, so it is only sent when explicitly non-default.
         if cfg.thinking_level and cfg.thinking_level.lower() not in ("default", "off", "none"):
-            body["generationConfig"]["thinkingConfig"] = {
-                "thinkingLevel": cfg.thinking_level
-            }
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": cfg.thinking_level}
         url = f"{GEMINI_API_BASE}/models/{cfg.model}:generateContent"
         async with httpx.AsyncClient(timeout=cfg.request_timeout) as client:
             resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Gemini API {resp.status_code}: {resp.text[:500]}"
-            )
+            raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
         candidate = (data.get("candidates") or [{}])[0]
         parts = (candidate.get("content") or {}).get("parts") or []

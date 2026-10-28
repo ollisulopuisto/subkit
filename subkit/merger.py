@@ -12,7 +12,9 @@ from subkit.parser import Subtitle, SubtitleDocument
 
 
 def format_srt(subtitles: list[Subtitle]) -> str:
-    blocks = [f"{s.id}\n{s.start} --> {s.end}\n{s.text}" for s in subtitles]
+    if not subtitles:
+        return ""
+    blocks = [f"{s.id}\n{s.start} --> {s.end}\n{s.text.replace(chr(10), ' ')}" for s in subtitles]
     return "\n\n".join(blocks) + "\n"
 
 
@@ -31,7 +33,8 @@ def format_ass(document: SubtitleDocument, subtitles: list[Subtitle]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_subtitle_file(document: SubtitleDocument, subtitles: list[Subtitle],
-                        path: str | Path) -> None:
+def write_subtitle_file(
+    document: SubtitleDocument, subtitles: list[Subtitle], path: str | Path
+) -> None:
     content = format_ass(document, subtitles) if document.format == "ass" else format_srt(subtitles)
     Path(path).write_text(content, encoding="utf-8")
