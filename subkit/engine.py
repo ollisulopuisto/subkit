@@ -238,6 +238,18 @@ class TranslationEngine:
     async def translate_document(
         self, doc: SubtitleDocument, resume_id: str | None = None
     ) -> RunReport:
+        try:
+            return await self._translate_document_impl(doc, resume_id)
+        finally:
+            # Release the pooled HTTP client inside its own event loop, so
+            # successive asyncio.run() calls (batch mode) never leak clients.
+            aclose = getattr(self.provider, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    async def _translate_document_impl(
+        self, doc: SubtitleDocument, resume_id: str | None = None
+    ) -> RunReport:
         cfg = self.cfg.translator
         chunks = chunk_subtitles(doc.subtitles, self.cfg.chunk)
         contexts = build_context_window(chunks, self.cfg.chunk.context_lines)

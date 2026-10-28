@@ -56,6 +56,15 @@ class _ClientPool:
             self._loop = loop
         return self._client
 
+    async def aclose(self) -> None:
+        """Close the pooled client. Called by the engine at the end of each
+        document, inside the same event loop that created the client."""
+        client, self._client, self._loop = self._client, None, None
+        if client is not None:
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
+
 
 class ChatProvider(Protocol):
     name: str
@@ -91,6 +100,9 @@ class GeminiProvider:
         self._cfg = cfg
         self._clients = _ClientPool(cfg.request_timeout)
         self.name = f"gemini/{cfg.model}"
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
@@ -139,6 +151,9 @@ class OpenAIProvider:
         self._url = f"{base}/chat/completions"
         self._clients = _ClientPool(cfg.request_timeout)
         self.name = f"openai/{cfg.model}@{base}"
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
