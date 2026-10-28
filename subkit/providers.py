@@ -12,7 +12,7 @@ the reply text. HTTP errors raise; the engine owns retry policy.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import Protocol, Self
 
 import httpx
 
@@ -72,7 +72,7 @@ class GeminiProvider:
             await self._client.aclose()
             self._client = None
 
-    async def __aenter__(self) -> GeminiProvider:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -136,7 +136,7 @@ class OpenAIProvider:
             await self._client.aclose()
             self._client = None
 
-    async def __aenter__(self) -> OpenAIProvider:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:

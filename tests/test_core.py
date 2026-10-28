@@ -491,6 +491,6 @@ def test_ass_tag_preservation_in_translation():
 def test_loads_object_markdown_fences():
     from subkit.engine import _loads_object
 
-    block = "```json\n{\"segments\": [{\"id\": 1, \"text\": \"hi\"}]}\n```"
+    block = '```json\n{"segments": [{"id": 1, "text": "hi"}]}\n```'
     res = _loads_object(block)
     assert res == {"segments": [{"id": 1, "text": "hi"}]}

@@ -135,7 +135,9 @@ async def _run_library_async(args: argparse.Namespace) -> int:
                 report = await engine.translate_document(doc, resume_id=resume_key)
                 subs = report.subtitles
                 if report.dropped_ids:
-                    print(f"INCOMPLETE {video.name}: {len(report.dropped_ids)} cues kept original text")
+                    print(
+                        f"INCOMPLETE {video.name}: {len(report.dropped_ids)} cues kept original text"
+                    )
             else:
                 subs = doc.subtitles
             out = write_sidecar_atomic(

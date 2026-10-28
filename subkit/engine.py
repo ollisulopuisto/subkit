@@ -296,7 +296,12 @@ class TranslationEngine:
                 expect_ids = [p["id"] for p in payload]
                 translated, new_terms = await self._chat_with_retries(
                     SYSTEM_PROMPT,
-                    [{"role": "user", "content": self._build_user_message(payload, context, full_json)}],
+                    [
+                        {
+                            "role": "user",
+                            "content": self._build_user_message(payload, context, full_json),
+                        }
+                    ],
                     expect_ids,
                 )
                 if cfg.rolling_glossary and new_terms:
