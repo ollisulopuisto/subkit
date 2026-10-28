@@ -52,6 +52,26 @@ uv sync --extra dev          # + pytest
 export GEMINI_API_KEY=...
 uv run subkit translate movie.srt --target Finnish --target-code fi \
     --glossary series-glossary.json --save-glossary series-glossary.json
+
+Persistent series glossaries (preferred for ongoing shows):
+
+    uv run subkit translate movie.srt --series LotR
+    uv run subkit library /media/movies --series LotR --translate
+
+Terms learned during a run are saved to the series file as *candidates* -
+they are used in later runs but never silently treated as your decisions.
+Inspect, correct and confirm them:
+
+    uv run subkit glossary list                 # all series
+    uv run subkit glossary show LotR            # terms with provenance
+    uv run subkit glossary set LotR Hobbit hobitti   # your decision, always wins
+    uv run subkit glossary confirm LotR Shire   # promote candidate(s) to yours
+    uv run subkit glossary delete LotR Ring
+
+One JSON file per series under ~/.local/share/subkit/series (override with
+SERIES_DIR). Series are fully isolated from each other; a static --glossary
+file still overrides series terms for a single run. Editing any term changes
+the resume fingerprint, so stale resume state is discarded automatically.
 # writes movie.fi.srt; INCOMPLETE cue ids are printed if any fell back
 ```
 

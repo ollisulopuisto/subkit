@@ -23,6 +23,49 @@ logger = logging.getLogger(__name__)
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
+class ProviderHTTPError(RuntimeError):
+    """HTTP error from a provider. `status_code` lets the engine tell permanent
+    4xx (never retried) from transient 429/5xx (retried with backoff)."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(f"provider HTTP {status_code}: {detail[:500]}")
+        self.status_code = status_code
+
+    @property
+    def retryable(self) -> bool:
+        return self.status_code == 429 or self.status_code >= 500
+
+
+class _ClientPool:
+    """One shared httpx.AsyncClient per event loop, so successive chunk calls
+    reuse the TCP/TLS connection instead of paying a handshake per request.
+    A client is bound to its loop; a new loop (e.g. a fresh asyncio.run per
+    library item) lazily gets a fresh client."""
+
+    def __init__(self, timeout: float) -> None:
+        self._timeout = timeout
+        self._loop = None
+        self._client: httpx.AsyncClient | None = None
+
+    async def get(self) -> httpx.AsyncClient:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._loop is not loop:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+            self._loop = loop
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the pooled client. Called by the engine at the end of each
+        document, inside the same event loop that created the client."""
+        client, self._client, self._loop = self._client, None, None
+        if client is not None:
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
+
+
 class ChatProvider(Protocol):
     name: str
 
@@ -55,7 +98,11 @@ class GeminiProvider:
                 )
             cfg.thinking_level = "off"  # default not applicable to this model: omit
         self._cfg = cfg
+        self._clients = _ClientPool(cfg.request_timeout)
         self.name = f"gemini/{cfg.model}"
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
@@ -79,10 +126,10 @@ class GeminiProvider:
         if cfg.thinking_level and cfg.thinking_level.lower() not in ("default", "off", "none"):
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": cfg.thinking_level}
         url = f"{GEMINI_API_BASE}/models/{cfg.model}:generateContent"
-        async with httpx.AsyncClient(timeout=cfg.request_timeout) as client:
-            resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
+        client = await self._clients.get()
+        resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
         if resp.status_code != 200:
-            raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:500]}")
+            raise ProviderHTTPError(resp.status_code, f"Gemini API: {resp.text}")
         data = resp.json()
         candidate = (data.get("candidates") or [{}])[0]
         parts = (candidate.get("content") or {}).get("parts") or []
@@ -102,7 +149,11 @@ class OpenAIProvider:
         self._cfg = cfg
         base = (cfg.base_url or "https://api.openai.com/v1").rstrip("/")
         self._url = f"{base}/chat/completions"
+        self._clients = _ClientPool(cfg.request_timeout)
         self.name = f"openai/{cfg.model}@{base}"
+
+    async def aclose(self) -> None:
+        await self._clients.aclose()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
@@ -115,10 +166,10 @@ class OpenAIProvider:
             "temperature": cfg.temperature,
             "max_tokens": cfg.max_output_tokens,
         }
-        async with httpx.AsyncClient(timeout=cfg.request_timeout) as client:
-            resp = await client.post(self._url, json=body, headers=headers)
+        client = await self._clients.get()
+        resp = await client.post(self._url, json=body, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(f"OpenAI-compatible API {resp.status_code}: {resp.text[:500]}")
+            raise ProviderHTTPError(resp.status_code, f"OpenAI-compatible API: {resp.text}")
         data = resp.json()
         text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if not text.strip():

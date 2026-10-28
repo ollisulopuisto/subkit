@@ -59,21 +59,25 @@ def _sidecar_lang_tokens(video: Path, sub: Path) -> list[str]:
     ]
 
 
-def existing_sidecars(video: Path) -> list[Path]:
+def existing_sidecars(video: Path, listing: list[Path] | None = None) -> list[Path]:
+    """Subtitle sidecars next to `video`. Pass a pre-fetched directory `listing`
+    to avoid one iterdir() syscall per video when scanning a whole library."""
     base = video.stem
-    if not video.parent.exists():
-        return []
+    if listing is None:
+        if not video.parent.exists():
+            return []
+        listing = list(video.parent.iterdir())
     return [
         p
-        for p in video.parent.iterdir()
+        for p in listing
         if p.is_file() and p.suffix.lower() in SUBTITLE_EXTENSIONS and p.name.startswith(base + ".")
     ]
 
 
-def sidecar_covers_lang(video: Path, lang: str) -> Path | None:
+def sidecar_covers_lang(video: Path, lang: str, sidecars: list[Path] | None = None) -> Path | None:
     """First sidecar carrying the language code in Jellyfin flag position."""
     codes = lang_codes(lang)
-    for path in existing_sidecars(video):
+    for path in sidecars if sidecars is not None else existing_sidecars(video):
         if any(tok in codes for tok in _sidecar_lang_tokens(video, path)):
             return path
     return None
@@ -96,6 +100,7 @@ def embedded_sub_langs(video: Path) -> set[str]:
                 str(video),
             ],
             capture_output=True,
+            check=False,
             timeout=60,
         )
         if proc.returncode != 0:
@@ -114,24 +119,47 @@ def embedded_sub_langs(video: Path) -> set[str]:
 
 
 def categorize_item(
-    video: Path, target_lang: str, source_lang: str = "en", force: bool = False
+    video: Path,
+    target_lang: str,
+    source_lang: str = "en",
+    force: bool = False,
+    *,
+    sidecars: list[Path] | None = None,
+    embedded=None,
 ) -> str:
-    """-> "skip" | "translate" | "transcribe"."""
+    """-> "skip" | "translate" | "transcribe".
+
+    ffprobe (`embedded_sub_langs`) runs only when the sidecar check alone cannot
+    decide - a library where items already have subtitle sidecars pays zero
+    subprocess spawns. `embedded` may be a callable returning the language set
+    (evaluated at most once per item)."""
     target_codes = lang_codes(target_lang)
     gen = sidecar_path(video, target_lang, generated_marker=True)
-    covering = sidecar_covers_lang(video, target_lang)
-    embedded = embedded_sub_langs(video)
+    covering = sidecar_covers_lang(video, target_lang, sidecars=sidecars)
+
+    _cache: list[set[str] | None] = [None]
+
+    def get_embedded() -> set[str]:
+        if _cache[0] is None:
+            _cache[0] = embedded() if callable(embedded) else embedded_sub_langs(video)
+        return _cache[0]
 
     if force:
         # Force only redoes items whose target sub is OUR generated file (or
         # absent). A user-owned target subtitle is never regenerated over.
-        if (covering is not None and covering != gen) or (target_codes & embedded):
+        if covering is not None and covering != gen:
+            return "skip"
+        if target_codes & get_embedded():
             return "skip"
     else:
-        if covering is not None or (target_codes & embedded):
+        if covering is not None:
+            return "skip"
+        if target_codes & get_embedded():
             return "skip"
 
-    if sidecar_covers_lang(video, source_lang) or (lang_codes(source_lang) & embedded):
+    if sidecar_covers_lang(video, source_lang, sidecars=sidecars):
+        return "translate"
+    if lang_codes(source_lang) & get_embedded():
         return "translate"
     return "transcribe"
 
@@ -157,10 +185,22 @@ def plan_library(
     root: Path, target_lang: str, source_lang: str = "en", force: bool = False
 ) -> LibraryPlan:
     plan = LibraryPlan()
+    dir_listings: dict[Path, list[Path]] = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
-        action = categorize_item(path, target_lang, source_lang, force)
+        parent = path.parent
+        if parent not in dir_listings:
+            # One directory listing per folder, shared by all videos in it.
+            dir_listings[parent] = list(parent.iterdir()) if parent.exists() else []
+        subs = [
+            p
+            for p in dir_listings[parent]
+            if p.is_file()
+            and p.suffix.lower() in SUBTITLE_EXTENSIONS
+            and p.name.startswith(path.stem + ".")
+        ]
+        action = categorize_item(path, target_lang, source_lang, force, sidecars=subs)
         if action == "skip":
             plan.skipped.append(path)
         else:
@@ -191,6 +231,7 @@ def extract_embedded_srt(video: Path, lang: str) -> Path | None:
                 tmp,
             ],
             capture_output=True,
+            check=False,
             timeout=300,
         )
         if proc.returncode == 0 and Path(tmp).stat().st_size > 0:
@@ -238,6 +279,6 @@ def refresh_item(api_url: str, api_key: str, item_id: str, timeout: float = 30.0
             timeout=timeout,
         )
         return resp.status_code in (200, 204)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - refresh failure is advisory, never fatal
         logger.warning("Jellyfin refresh failed for item %s: %s", item_id, exc)
         return False

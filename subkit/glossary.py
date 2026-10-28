@@ -33,7 +33,7 @@ class Glossary:
             return cls()
         data = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            raise ValueError(f"Glossary must be a JSON object, got {type(data).__name__}")
+            raise TypeError(f"Glossary must be a JSON object, got {type(data).__name__}")
         logger.info("Loaded glossary with %d entries from %s", len(data), p)
         return cls(entries={str(k): str(v) for k, v in data.items()})
 

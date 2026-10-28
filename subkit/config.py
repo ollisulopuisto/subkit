@@ -75,6 +75,10 @@ class TranslatorConfig:
     cps_tolerance: float = _env_float("CPS_TOLERANCE", 1.25)
     # Glossary lifecycle
     glossary_path: str | None = _env("GLOSSARY_PATH")
+    # Persistent per-series glossary (see subkit/series.py). SERIES picks the
+    # series by name; SERIES_DIR overrides the storage directory.
+    series: str | None = _env("SERIES")
+    series_dir: str | None = _env("SERIES_DIR")
     rolling_glossary: bool = _env_bool("ROLLING_GLOSSARY", True)
     rolling_glossary_save: str | None = _env("ROLLING_GLOSSARY_SAVE")
     enforce_glossary: bool = _env_bool("ENFORCE_GLOSSARY", True)

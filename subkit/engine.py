@@ -31,7 +31,8 @@ from subkit.config import AppConfig
 from subkit.glossary import Glossary
 from subkit.parser import Subtitle, SubtitleDocument
 from subkit.prompts import COMPRESSION_PROMPT, CORRECTION_PROMPT, SYSTEM_PROMPT
-from subkit.providers import ChatProvider
+from subkit.providers import ChatProvider, ProviderHTTPError
+from subkit.series import SeriesGlossary, series_path
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,21 @@ class TranslationEngine:
     def __init__(self, cfg: AppConfig, provider: ChatProvider) -> None:
         self.cfg = cfg
         self.provider = provider
-        self._glossary = (
-            Glossary.from_file(cfg.translator.glossary_path)
-            if cfg.translator.glossary_path
-            else Glossary()
-        )
+        # Persistent per-series terms load first (user terms and auto
+        # candidates); the static per-run glossary file overrides them.
+        self._series: SeriesGlossary | None = None
+        self._series_path: Path | None = None
+        if cfg.translator.series:
+            self._series_path = series_path(cfg.translator.series, cfg.translator.series_dir)
+            self._series = SeriesGlossary.load(self._series_path)
+        # Canonical glossary = user terms only; auto candidates go to the
+        # prompt under a separate, clearly labeled suggestion block.
+        self._candidate_terms: dict[str, str] = self._series.auto_entries() if self._series else {}
+        self._glossary = Glossary(self._series.user_entries()) if self._series else Glossary()
+        if cfg.translator.glossary_path:
+            static = Glossary.from_file(cfg.translator.glossary_path)
+            self._glossary.extend(static.entries, existing_wins=False)
+        self._run_new_terms: dict[str, str] = {}
         self._requests = 0
 
     @property
@@ -160,7 +171,19 @@ class TranslationEngine:
                 return translations, new_terms
             except BudgetExhausted:
                 raise
-            except Exception as exc:  # transport/API errors
+            except ProviderHTTPError as exc:
+                if not exc.retryable:
+                    raise  # permanent 4xx: retrying wastes budget and time
+                last_err = exc
+                wait = cfg.retry_base_delay * (2**attempt)
+                logger.warning(
+                    "Provider call failed (attempt %d): %s; retrying in %.1fs",
+                    attempt + 1,
+                    exc,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - any provider/transport failure retries with backoff
                 last_err = exc
                 wait = cfg.retry_base_delay * (2**attempt)
                 logger.warning(
@@ -176,18 +199,20 @@ class TranslationEngine:
         self,
         payload: list[dict],
         context: list[Subtitle] | None,
-        full_transcript: list[Subtitle] | None = None,
+        full_transcript_block: str | None = None,
     ) -> str:
         cfg = self.cfg.translator
         parts = [f"TARGET LANGUAGE: {cfg.target_language}"]
         parts.append(f"SOURCE LANGUAGE: {cfg.source_language or 'auto-detect'}")
         parts.append(f"GLOSSARY: {json.dumps(self._glossary.entries, ensure_ascii=False)}")
-        if full_transcript:
-            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full_transcript]
+        if self._candidate_terms:
             parts.append(
-                "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
-                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
+                "SUGGESTED TERMS (auto-extracted candidates, NOT user-confirmed; "
+                "prefer them for consistency, but GLOSSARY above always wins):\n"
+                + json.dumps(self._candidate_terms, ensure_ascii=False)
             )
+        if full_transcript_block is not None:
+            parts.append(full_transcript_block)
         elif context:
             ctx = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in context]
             parts.append(
@@ -223,11 +248,23 @@ class TranslationEngine:
                     translated[i] = text
         except BudgetExhausted:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - compression failure must not lose the translation
             logger.warning("Compression retry failed: %s", exc)
         return translated
 
     async def translate_document(
+        self, doc: SubtitleDocument, resume_id: str | None = None
+    ) -> RunReport:
+        try:
+            return await self._translate_document_impl(doc, resume_id)
+        finally:
+            # Release the pooled HTTP client inside its own event loop, so
+            # successive asyncio.run() calls (batch mode) never leak clients.
+            aclose = getattr(self.provider, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    async def _translate_document_impl(
         self, doc: SubtitleDocument, resume_id: str | None = None
     ) -> RunReport:
         cfg = self.cfg.translator
@@ -246,8 +283,9 @@ class TranslationEngine:
             saved_glossary = _load_state_glossary(state_path, fingerprint)
             if saved_glossary:
                 self._glossary.extend(saved_glossary)
-        full = doc.subtitles if cfg.full_context else None
-        if full is not None:
+        full_block: str | None = None
+        if cfg.full_context:
+            full = doc.subtitles
             context_chars = sum(len(s.text) for s in full)
             if context_chars > cfg.max_context_chars:
                 raise RuntimeError(
@@ -256,6 +294,12 @@ class TranslationEngine:
                     "Set FULL_CONTEXT=off to use the smaller previous-chunk context window, "
                     "or raise MAX_CONTEXT_CHARS deliberately."
                 )
+            # Serialized once per document and reused for every chunk call.
+            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full]
+            full_block = (
+                "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
+                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
+            )
 
         for idx, (chunk, context) in enumerate(zip(chunks, contexts, strict=False)):
             if idx in done_chunks:
@@ -281,10 +325,16 @@ class TranslationEngine:
                 expect_ids = [p["id"] for p in payload]
                 translated, new_terms = await self._chat_with_retries(
                     SYSTEM_PROMPT,
-                    [{"role": "user", "content": self._build_user_message(payload, context, full)}],
+                    [
+                        {
+                            "role": "user",
+                            "content": self._build_user_message(payload, context, full_block),
+                        }
+                    ],
                     expect_ids,
                 )
                 if cfg.rolling_glossary and new_terms:
+                    self._run_new_terms.update(new_terms)
                     added = self._glossary.extend(new_terms)
                     if added:
                         logger.info("Chunk %d: rolling glossary +%d terms", idx, added)
@@ -353,6 +403,16 @@ class TranslationEngine:
         report.glossary = dict(self._glossary.entries)
         if cfg.rolling_glossary and cfg.rolling_glossary_save:
             self._glossary.save(cfg.rolling_glossary_save)
+        if self._series is not None and self._series_path is not None and self._run_new_terms:
+            added = self._series.merge_auto(self._run_new_terms)
+            if added:
+                logger.info(
+                    "Series %s: %d new candidate terms saved (review: subkit glossary show %s)",
+                    self._series.name,
+                    added,
+                    self._series.name,
+                )
+            self._series.save(self._series_path)
         return report
 
 
@@ -368,9 +428,10 @@ def _fingerprint(engine: TranslationEngine, doc: SubtitleDocument) -> str:
         f"|{cfg.target_language}|{cfg.source_language}"
         f"|{p.kind}|{p.model}|{p.base_url}|{p.thinking_level}".encode()
     )
+    series_rev = engine._series.revision() if engine._series is not None else ""
     h.update(
         f"|{json.dumps(engine._glossary.entries, sort_keys=True, ensure_ascii=False)}"
-        f"|{SYSTEM_PROMPT}".encode()
+        f"|{SYSTEM_PROMPT}|{series_rev}".encode()
     )
     return h.hexdigest()
 
