@@ -25,7 +25,7 @@ def extract_audio(media_path: str, sample_rate: int = 16000) -> np.ndarray:
         "f32le",
         "pipe:1",
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    proc = subprocess.run(cmd, capture_output=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed on {media_path}: {proc.stderr.decode(errors='replace')[:400]}"

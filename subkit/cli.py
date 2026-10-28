@@ -33,7 +33,7 @@ from subkit.providers import build_provider
 def _segments_to_doc(segments) -> SubtitleDocument:
 
     def fmt(sec: float) -> str:
-        ms = max(0, int(round(sec * 1000)))
+        ms = max(0, round(sec * 1000))
         h, ms = divmod(ms, 3_600_000)
         m, ms = divmod(ms, 60_000)
         s, ms = divmod(ms, 1000)
@@ -171,7 +171,7 @@ def cmd_library(args: argparse.Namespace) -> int:
                 print(f"skip (needs --translate): {video}")
                 continue
             finish(video, doc, str(video))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - one bad item must not abort the batch
             failures += 1
             print(f"FAILED {video}: {exc}")
 
@@ -192,7 +192,7 @@ def cmd_library(args: argparse.Namespace) -> int:
                 result = transcribe(str(video), engine=args.transcribe_engine, **kwargs)
                 doc = _segments_to_doc(result.segments)
                 finish(video, doc, str(video))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - one bad item must not abort the batch
                 failures += 1
                 print(f"FAILED {video}: {exc}")
     return 1 if failures else 0

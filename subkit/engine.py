@@ -31,7 +31,7 @@ from subkit.config import AppConfig
 from subkit.glossary import Glossary
 from subkit.parser import Subtitle, SubtitleDocument
 from subkit.prompts import COMPRESSION_PROMPT, CORRECTION_PROMPT, SYSTEM_PROMPT
-from subkit.providers import ChatProvider
+from subkit.providers import ChatProvider, ProviderHTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,19 @@ class TranslationEngine:
                 return translations, new_terms
             except BudgetExhausted:
                 raise
-            except Exception as exc:  # transport/API errors
+            except ProviderHTTPError as exc:
+                if not exc.retryable:
+                    raise  # permanent 4xx: retrying wastes budget and time
+                last_err = exc
+                wait = cfg.retry_base_delay * (2**attempt)
+                logger.warning(
+                    "Provider call failed (attempt %d): %s; retrying in %.1fs",
+                    attempt + 1,
+                    exc,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - any provider/transport failure retries with backoff
                 last_err = exc
                 wait = cfg.retry_base_delay * (2**attempt)
                 logger.warning(
@@ -176,18 +188,14 @@ class TranslationEngine:
         self,
         payload: list[dict],
         context: list[Subtitle] | None,
-        full_transcript: list[Subtitle] | None = None,
+        full_transcript_block: str | None = None,
     ) -> str:
         cfg = self.cfg.translator
         parts = [f"TARGET LANGUAGE: {cfg.target_language}"]
         parts.append(f"SOURCE LANGUAGE: {cfg.source_language or 'auto-detect'}")
         parts.append(f"GLOSSARY: {json.dumps(self._glossary.entries, ensure_ascii=False)}")
-        if full_transcript:
-            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full_transcript]
-            parts.append(
-                "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
-                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
-            )
+        if full_transcript_block is not None:
+            parts.append(full_transcript_block)
         elif context:
             ctx = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in context]
             parts.append(
@@ -223,7 +231,7 @@ class TranslationEngine:
                     translated[i] = text
         except BudgetExhausted:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - compression failure must not lose the translation
             logger.warning("Compression retry failed: %s", exc)
         return translated
 
@@ -246,8 +254,9 @@ class TranslationEngine:
             saved_glossary = _load_state_glossary(state_path, fingerprint)
             if saved_glossary:
                 self._glossary.extend(saved_glossary)
-        full = doc.subtitles if cfg.full_context else None
-        if full is not None:
+        full_block: str | None = None
+        if cfg.full_context:
+            full = doc.subtitles
             context_chars = sum(len(s.text) for s in full)
             if context_chars > cfg.max_context_chars:
                 raise RuntimeError(
@@ -256,6 +265,12 @@ class TranslationEngine:
                     "Set FULL_CONTEXT=off to use the smaller previous-chunk context window, "
                     "or raise MAX_CONTEXT_CHARS deliberately."
                 )
+            # Serialized once per document and reused for every chunk call.
+            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full]
+            full_block = (
+                "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
+                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
+            )
 
         for idx, (chunk, context) in enumerate(zip(chunks, contexts, strict=False)):
             if idx in done_chunks:
@@ -281,7 +296,12 @@ class TranslationEngine:
                 expect_ids = [p["id"] for p in payload]
                 translated, new_terms = await self._chat_with_retries(
                     SYSTEM_PROMPT,
-                    [{"role": "user", "content": self._build_user_message(payload, context, full)}],
+                    [
+                        {
+                            "role": "user",
+                            "content": self._build_user_message(payload, context, full_block),
+                        }
+                    ],
                     expect_ids,
                 )
                 if cfg.rolling_glossary and new_terms:

@@ -113,7 +113,7 @@ def test_dropped_id_falls_back_and_is_flagged():
     report = translate_document_sync(make_doc(), cfg(), MockProvider(drop_ids={dropped}))
     assert dropped in report.dropped_ids
     assert not report.ok
-    sub = [s for s in report.subtitles if s.id == dropped][0]
+    sub = next(s for s in report.subtitles if s.id == dropped)
     assert sub.text == doc.subtitles[1].text  # original kept
 
 
@@ -411,3 +411,162 @@ def test_format_srt_multiline_text_is_collapsed():
         )
     ]
     assert format_srt(subs) == "2\n00:00:03,500 --> 00:00:05,000\nLine one Line two\n"
+
+
+# ---------- performance-behavior tests ----------
+
+
+def test_categorize_skips_ffprobe_when_sidecar_decides(tmp_path, monkeypatch):
+    calls = []
+
+    def spy(video):
+        calls.append(video)
+        return {"eng"}
+
+    monkeypatch.setattr("subkit.jellyfin.embedded_sub_langs", spy)
+    v = tmp_path / "Ep1.mkv"
+    v.write_bytes(b"")
+    # fi sidecar present -> skip decided entirely by sidecar, no ffprobe
+    (tmp_path / "Ep1.fi.srt").write_text("x", encoding="utf-8")
+    assert categorize_item(v, "fi") == "skip"
+    assert calls == []
+    # en sidecar present -> ffprobe runs ONCE to rule out embedded Finnish,
+    # then translate is decided by the sidecar
+    (tmp_path / "Ep1.fi.srt").unlink()
+    (tmp_path / "Ep1.en.srt").write_text("x", encoding="utf-8")
+    assert categorize_item(v, "fi") == "translate"
+    assert len(calls) == 1
+    # no sidecars -> embedded set is queried but evaluated at most once per item
+    (tmp_path / "Ep1.en.srt").unlink()
+    assert categorize_item(v, "fi") == "translate"  # embedded eng from spy
+    assert len(calls) == 2
+
+
+def test_plan_library_one_iterdir_per_directory(tmp_path, monkeypatch):
+    from pathlib import Path as _P
+
+    shows = tmp_path / "Show"
+    shows.mkdir()
+    for i in range(5):
+        (shows / f"Ep{i}.mkv").write_bytes(b"")
+        (shows / f"Ep{i}.fi.srt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr("subkit.jellyfin.embedded_sub_langs", lambda v: set())
+    real_iterdir = _P.iterdir
+    count = {"n": 0}
+
+    def counting(self):
+        count["n"] += 1
+        return real_iterdir(self)
+
+    monkeypatch.setattr(_P, "iterdir", counting)
+    plan = plan_library(tmp_path, "fi")
+    assert len(plan.skipped) == 5
+    assert count["n"] == 1, f"expected 1 directory listing, got {count['n']}"
+
+
+def test_provider_client_reused_across_calls(monkeypatch):
+    import asyncio
+
+    from subkit.config import ProviderConfig
+    from subkit.providers import GeminiProvider
+
+    created = []
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            created.append(kw)
+
+        async def post(self, url, json=None, headers=None):
+            return FakeResp()
+
+    monkeypatch.setattr("subkit.providers.httpx.AsyncClient", FakeClient)
+    p = GeminiProvider(ProviderConfig(kind="gemini", model="gemini-3.8-flash", api_key="k"))
+
+    async def two_calls():
+        await p.chat("s", [{"role": "user", "content": "a"}])
+        await p.chat("s", [{"role": "user", "content": "b"}])
+
+    asyncio.run(two_calls())
+    assert len(created) == 1, "each call must not open a new HTTP client"
+
+
+def test_permanent_4xx_not_retried():
+    from subkit.providers import ProviderHTTPError
+
+    class Fail400:
+        name = "fail"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, system, messages):
+            self.calls += 1
+            raise ProviderHTTPError(400, "bad request: API key invalid")
+
+    provider = Fail400()
+    c = cfg()
+    c.translator.retry_base_delay = 0
+    try:
+        translate_document_sync(make_doc(), c, provider)
+        raise AssertionError("expected failure")
+    except ProviderHTTPError:
+        pass
+    assert provider.calls == 1, "permanent 4xx must not be retried"
+
+
+def test_429_is_retried():
+    from subkit.providers import ProviderHTTPError
+
+    class Fail429:
+        name = "fail"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, system, messages):
+            self.calls += 1
+            raise ProviderHTTPError(429, "rate limited")
+
+    provider = Fail429()
+    c = cfg(max_retries=3)
+    c.translator.retry_base_delay = 0
+    try:
+        translate_document_sync(make_doc(), c, provider)
+        raise AssertionError("expected failure")
+    except RuntimeError:
+        pass
+    assert provider.calls == 3, "429 must be retried up to max_retries"
+
+
+def test_full_transcript_serialized_once(monkeypatch):
+    import json as _json
+
+    provider = MockProvider()
+    c = cfg()
+    c.chunk.max_lines = 1  # force many chunks
+    real_dumps = _json.dumps
+    calls = {"n": 0}
+
+    def counting(obj, **kw):
+        import inspect
+
+        frame = inspect.currentframe().f_back
+        if frame is not None and frame.f_code.co_filename.endswith("subkit/engine.py"):
+            calls["n"] += 1
+        return real_dumps(obj, **kw)
+
+    monkeypatch.setattr("subkit.engine.json.dumps", counting)
+    translate_document_sync(make_doc(), c, provider)
+    n_chunks = len(provider.calls)
+    assert n_chunks >= 2
+    # per-chunk dumps: glossary (may change as terms accumulate) + payload.
+    # The full-transcript block is built once, so dumps stays well under 3x chunks.
+    assert calls["n"] <= 2 * n_chunks + 2, (
+        f"{calls['n']} dumps for {n_chunks} chunks suggests per-chunk transcript serialization"
+    )
