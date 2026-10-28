@@ -25,6 +25,7 @@ import json
 import logging
 from pathlib import Path
 
+from subkit.ass_tags import has_tags, restore_tags, strip_tags
 from subkit.chunker import build_context_window, chunk_subtitles
 from subkit.classify import LineKind, classify
 from subkit.config import AppConfig
@@ -66,7 +67,12 @@ def _extract_block(content: str, tag: str) -> str:
 
 
 def _loads_object(text: str):
-    text = text.strip().strip("`")
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2 and lines[-1].startswith("```"):
+            text = "\n".join(lines[1:-1]).strip()
+    text = text.strip("`").strip()
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end < start:
         return None
@@ -141,19 +147,20 @@ class TranslationEngine:
         cfg = self.cfg.translator
         last_err: Exception | None = None
         for attempt in range(cfg.max_retries):
+            call_messages = list(messages)
             try:
-                content = await self._call(system, messages)
+                content = await self._call(system, call_messages)
                 translations = _parse_segments(_extract_block(content, "translation") or content)
                 new_terms = _parse_glossary(_extract_block(content, "glossary"))
                 missing = [i for i in expect_ids if i not in translations]
-                if missing and attempt < cfg.max_retries - 1:
+                if missing:
                     # One correction round for malformed/incomplete replies.
-                    messages = [
-                        *messages,
+                    corr_messages = [
+                        *call_messages,
                         {"role": "assistant", "content": content},
                         {"role": "user", "content": CORRECTION_PROMPT},
                     ]
-                    content = await self._call(system, messages)
+                    content = await self._call(system, corr_messages)
                     fixed = _parse_segments(_extract_block(content, "translation") or content)
                     translations.update(fixed)
                     new_terms.update(_parse_glossary(_extract_block(content, "glossary")))
@@ -176,17 +183,16 @@ class TranslationEngine:
         self,
         payload: list[dict],
         context: list[Subtitle] | None,
-        full_transcript: list[Subtitle] | None = None,
+        full_transcript_json: str | None = None,
     ) -> str:
         cfg = self.cfg.translator
         parts = [f"TARGET LANGUAGE: {cfg.target_language}"]
         parts.append(f"SOURCE LANGUAGE: {cfg.source_language or 'auto-detect'}")
         parts.append(f"GLOSSARY: {json.dumps(self._glossary.entries, ensure_ascii=False)}")
-        if full_transcript:
-            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full_transcript]
+        if full_transcript_json:
             parts.append(
                 "FULL TRANSCRIPT (read-only, whole video for context; do NOT "
-                "translate these, translate only SEGMENTS):\n" + json.dumps(ft, ensure_ascii=False)
+                "translate these, translate only SEGMENTS):\n" + full_transcript_json
             )
         elif context:
             ctx = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in context]
@@ -247,6 +253,7 @@ class TranslationEngine:
             if saved_glossary:
                 self._glossary.extend(saved_glossary)
         full = doc.subtitles if cfg.full_context else None
+        full_json: str | None = None
         if full is not None:
             context_chars = sum(len(s.text) for s in full)
             if context_chars > cfg.max_context_chars:
@@ -256,6 +263,8 @@ class TranslationEngine:
                     "Set FULL_CONTEXT=off to use the smaller previous-chunk context window, "
                     "or raise MAX_CONTEXT_CHARS deliberately."
                 )
+            ft = [{"id": s.id, "text": s.text.replace(chr(10), " ")} for s in full]
+            full_json = json.dumps(ft, ensure_ascii=False)
 
         for idx, (chunk, context) in enumerate(zip(chunks, contexts, strict=False)):
             if idx in done_chunks:
@@ -263,12 +272,18 @@ class TranslationEngine:
                 continue
             kinds = [classify(s.text) for s in chunk]
             payload: list[dict] = []
+            ass_tags_info: dict[int, tuple[list[tuple[int, str]], int]] = {}
             for s, kind in zip(chunk, kinds, strict=False):
                 if (
                     kind in (LineKind.SOUND_CUE, LineKind.STAGE_DIR) and not cfg.translate_cues
                 ) or (kind == LineKind.LYRICS and not cfg.translate_lyrics):
                     continue
-                item: dict = {"id": s.id, "text": s.text.replace("\n", " ")}
+                clean_text = s.text
+                if doc.format == "ass" and has_tags(s.text):
+                    clean_text, tags = strip_tags(s.text)
+                    ass_tags_info[s.id] = (tags, len(clean_text))
+
+                item: dict = {"id": s.id, "text": clean_text.replace("\n", " ")}
                 if s.speaker:
                     item["speaker"] = s.speaker
                 if kind != LineKind.DIALOG:
@@ -281,7 +296,7 @@ class TranslationEngine:
                 expect_ids = [p["id"] for p in payload]
                 translated, new_terms = await self._chat_with_retries(
                     SYSTEM_PROMPT,
-                    [{"role": "user", "content": self._build_user_message(payload, context, full)}],
+                    [{"role": "user", "content": self._build_user_message(payload, context, full_json)}],
                     expect_ids,
                 )
                 if cfg.rolling_glossary and new_terms:
@@ -315,6 +330,13 @@ class TranslationEngine:
                             * cfg.cps_tolerance
                         ]
                         report.cps_violations.extend(still)
+
+                # Restore ASS override tags if present
+                if doc.format == "ass" and ass_tags_info:
+                    for pid in expect_ids:
+                        if pid in ass_tags_info and pid in translated:
+                            tags, orig_len = ass_tags_info[pid]
+                            translated[pid] = restore_tags(translated[pid], tags, orig_len)
 
                 # Glossary compliance: one targeted note for the next chunk is
                 # cheaper than a re-call; violations surface in the log.

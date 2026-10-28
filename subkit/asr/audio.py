@@ -30,4 +30,6 @@ def extract_audio(media_path: str, sample_rate: int = 16000) -> np.ndarray:
         raise RuntimeError(
             f"ffmpeg failed on {media_path}: {proc.stderr.decode(errors='replace')[:400]}"
         )
-    return np.frombuffer(proc.stdout, dtype=np.float32)
+    samples = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    del proc
+    return samples

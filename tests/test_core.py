@@ -411,3 +411,86 @@ def test_format_srt_multiline_text_is_collapsed():
         )
     ]
     assert format_srt(subs) == "2\n00:00:03,500 --> 00:00:05,000\nLine one Line two\n"
+
+
+def test_provider_client_reuse_and_close(monkeypatch):
+    from subkit.config import ProviderConfig
+    from subkit.providers import GeminiProvider, OpenAIProvider
+
+    class DummyClient:
+        def __init__(self, **kwargs):
+            self.is_closed = False
+
+        async def aclose(self):
+            self.is_closed = True
+
+        async def post(self, url, json=None, headers=None):
+            class Resp:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+                        "choices": [{"message": {"content": "ok"}}],
+                    }
+
+            return Resp()
+
+    monkeypatch.setattr("subkit.providers.httpx.AsyncClient", DummyClient)
+
+    import asyncio
+
+    async def run():
+        p1 = GeminiProvider(ProviderConfig(kind="gemini", model="gemini-3.8-flash", api_key="k"))
+        c1_a = p1._get_client()
+        c1_b = p1._get_client()
+        assert c1_a is c1_b
+        await p1.close()
+        assert c1_a.is_closed
+
+        p2 = OpenAIProvider(ProviderConfig(kind="openai", model="gpt-4o", api_key="k"))
+        c2_a = p2._get_client()
+        c2_b = p2._get_client()
+        assert c2_a is c2_b
+        await p2.close()
+        assert c2_a.is_closed
+
+    asyncio.run(run())
+
+
+def test_ass_tag_preservation_in_translation():
+    ass_sub = Subtitle(
+        id=1,
+        start="00:00:01.00",
+        end="00:00:03.00",
+        text="{\\pos(100,200)}{\\i1}Hello world{\\i0}",
+    )
+    doc = SubtitleDocument(format="ass", subtitles=[ass_sub], ass_lines=["Dialogue: ..."])
+
+    class AssMockProvider(MockProvider):
+        async def chat(self, system, messages):
+            user = messages[-1]["content"]
+            payload = json.loads(user.split("SEGMENTS:\n", 1)[1])
+            # Check that ASS tags were stripped before sending to LLM
+            assert "{\\pos" not in payload[0]["text"]
+            assert "{\\i1}" not in payload[0]["text"]
+            assert payload[0]["text"] == "Hello world"
+            return (
+                "<glossary>{}</glossary>\n"
+                '<translation>{"segments": [{"id": 1, "text": "Hei maailma"}]}</translation>'
+            )
+
+    report = translate_document_sync(doc, cfg(), AssMockProvider())
+    assert report.ok
+    res_text = report.subtitles[0].text
+    # Check that tags were restored after translation
+    assert res_text.startswith("{\\pos(100,200)}")
+    assert "{\\i1}" in res_text and "{\\i0}" in res_text
+
+
+def test_loads_object_markdown_fences():
+    from subkit.engine import _loads_object
+
+    block = "```json\n{\"segments\": [{\"id\": 1, \"text\": \"hi\"}]}\n```"
+    res = _loads_object(block)
+    assert res == {"segments": [{"id": 1, "text": "hi"}]}

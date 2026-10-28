@@ -30,6 +30,10 @@ class ChatProvider(Protocol):
         """Return the model's reply text for system + user/assistant messages."""
         ...
 
+    async def close(self) -> None:
+        """Close open resources (e.g., HTTP sessions)."""
+        ...
+
 
 class GeminiProvider:
     """Gemini generateContent. System prompt goes to systemInstruction; the
@@ -56,6 +60,23 @@ class GeminiProvider:
             cfg.thinking_level = "off"  # default not applicable to this model: omit
         self._cfg = cfg
         self.name = f"gemini/{cfg.model}"
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._cfg.request_timeout)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> GeminiProvider:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
@@ -79,8 +100,8 @@ class GeminiProvider:
         if cfg.thinking_level and cfg.thinking_level.lower() not in ("default", "off", "none"):
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": cfg.thinking_level}
         url = f"{GEMINI_API_BASE}/models/{cfg.model}:generateContent"
-        async with httpx.AsyncClient(timeout=cfg.request_timeout) as client:
-            resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
+        client = self._get_client()
+        resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
         if resp.status_code != 200:
             raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
@@ -103,6 +124,23 @@ class OpenAIProvider:
         base = (cfg.base_url or "https://api.openai.com/v1").rstrip("/")
         self._url = f"{base}/chat/completions"
         self.name = f"openai/{cfg.model}@{base}"
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._cfg.request_timeout)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> OpenAIProvider:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
     async def chat(self, system: str, messages: list[dict[str, str]]) -> str:
         cfg = self._cfg
@@ -115,8 +153,8 @@ class OpenAIProvider:
             "temperature": cfg.temperature,
             "max_tokens": cfg.max_output_tokens,
         }
-        async with httpx.AsyncClient(timeout=cfg.request_timeout) as client:
-            resp = await client.post(self._url, json=body, headers=headers)
+        client = self._get_client()
+        resp = await client.post(self._url, json=body, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(f"OpenAI-compatible API {resp.status_code}: {resp.text[:500]}")
         data = resp.json()

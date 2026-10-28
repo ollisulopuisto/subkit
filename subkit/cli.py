@@ -111,7 +111,7 @@ def cmd_transcribe(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_library(args: argparse.Namespace) -> int:
+async def _run_library_async(args: argparse.Namespace) -> int:
     root = Path(args.root)
     plan = plan_library(root, args.target_code, args.source_code, force=args.force)
     print(plan.summary())
@@ -125,77 +125,87 @@ def cmd_library(args: argparse.Namespace) -> int:
     cfg = AppConfig()
     cfg.translator.target_language = args.target
     provider = build_provider(cfg.provider) if args.translate else None
-    engine = TranslationEngine(cfg, provider) if provider else None
     failures = 0
 
-    def finish(video: Path, doc, resume_key: str) -> None:
-        if engine is not None:
-            report = asyncio.run(engine.translate_document(doc, resume_id=resume_key))
-            subs = report.subtitles
-            if report.dropped_ids:
-                print(f"INCOMPLETE {video.name}: {len(report.dropped_ids)} cues kept original text")
-        else:
-            subs = doc.subtitles
-        out = write_sidecar_atomic(
-            video,
-            args.target_code,
-            format_srt(subs),
-            generated_marker=not args.no_generated_marker,
-            force=args.force,
-        )
-        print(f"wrote: {out}")
+    try:
+        engine = TranslationEngine(cfg, provider) if provider else None
 
-    if plan.transcribe and not args.transcribe_engine:
-        print(
-            f"NOTE: {len(plan.transcribe)} items have no source subtitles and need ASR; "
-            "pass --transcribe-engine sherpa (or mlx) to process them"
-        )
+        async def finish(video: Path, doc: SubtitleDocument, resume_key: str) -> None:
+            if engine is not None:
+                report = await engine.translate_document(doc, resume_id=resume_key)
+                subs = report.subtitles
+                if report.dropped_ids:
+                    print(f"INCOMPLETE {video.name}: {len(report.dropped_ids)} cues kept original text")
+            else:
+                subs = doc.subtitles
+            out = write_sidecar_atomic(
+                video,
+                args.target_code,
+                format_srt(subs),
+                generated_marker=not args.no_generated_marker,
+                force=args.force,
+            )
+            print(f"wrote: {out}")
 
-    for video in plan.translate:
-        try:
-            src = sidecar_covers_lang(video, args.source_code)
-            tmp = None
-            if src is None:
-                tmp = extract_embedded_srt(video, args.source_code)
-                src = tmp
-            if src is None:
-                print(f"FAILED {video}: no extractable {args.source_code} subtitles")
-                failures += 1
-                continue
+        if plan.transcribe and not args.transcribe_engine:
+            print(
+                f"NOTE: {len(plan.transcribe)} items have no source subtitles and need ASR; "
+                "pass --transcribe-engine sherpa (or mlx) to process them"
+            )
+
+        for video in plan.translate:
             try:
-                doc = parse_subtitle_file(src)
-            finally:
-                if tmp:
-                    tmp.unlink(missing_ok=True)
-            if engine is None:
-                print(f"skip (needs --translate): {video}")
-                continue
-            finish(video, doc, str(video))
-        except Exception as exc:
-            failures += 1
-            print(f"FAILED {video}: {exc}")
-
-    if args.transcribe_engine:
-        for video in plan.transcribe:
-            try:
-                from subkit.asr.base import transcribe
-
-                kwargs = (
-                    {
-                        "model_dir": args.model_dir,
-                        "vad_model": args.vad_model,
-                        "num_threads": args.threads,
-                    }
-                    if args.transcribe_engine == "sherpa"
-                    else {}
-                )
-                result = transcribe(str(video), engine=args.transcribe_engine, **kwargs)
-                doc = _segments_to_doc(result.segments)
-                finish(video, doc, str(video))
+                src = sidecar_covers_lang(video, args.source_code)
+                tmp = None
+                if src is None:
+                    tmp = extract_embedded_srt(video, args.source_code)
+                    src = tmp
+                if src is None:
+                    print(f"FAILED {video}: no extractable {args.source_code} subtitles")
+                    failures += 1
+                    continue
+                try:
+                    doc = parse_subtitle_file(src)
+                finally:
+                    if tmp:
+                        tmp.unlink(missing_ok=True)
+                if engine is None:
+                    print(f"skip (needs --translate): {video}")
+                    continue
+                await finish(video, doc, str(video))
             except Exception as exc:
                 failures += 1
                 print(f"FAILED {video}: {exc}")
+
+        if args.transcribe_engine:
+            for video in plan.transcribe:
+                try:
+                    from subkit.asr.base import transcribe
+
+                    kwargs = (
+                        {
+                            "model_dir": args.model_dir,
+                            "vad_model": args.vad_model,
+                            "num_threads": args.threads,
+                        }
+                        if args.transcribe_engine == "sherpa"
+                        else {}
+                    )
+                    result = transcribe(str(video), engine=args.transcribe_engine, **kwargs)
+                    doc = _segments_to_doc(result.segments)
+                    await finish(video, doc, str(video))
+                except Exception as exc:
+                    failures += 1
+                    print(f"FAILED {video}: {exc}")
+    finally:
+        if provider is not None and hasattr(provider, "close"):
+            await provider.close()
+
     return 1 if failures else 0
+
+
+def cmd_library(args: argparse.Namespace) -> int:
+    return asyncio.run(_run_library_async(args))
 
 
 def main() -> int:
