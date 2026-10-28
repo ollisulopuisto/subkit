@@ -28,6 +28,7 @@ from subkit.jellyfin import (
 from subkit.merger import format_srt, write_subtitle_file
 from subkit.parser import Subtitle, SubtitleDocument, parse_subtitle_file
 from subkit.providers import build_provider
+from subkit.series import SeriesGlossary, list_series, series_path
 
 
 def _segments_to_doc(segments) -> SubtitleDocument:
@@ -69,6 +70,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
     cfg = AppConfig()
     cfg.translator.target_language = args.target
     cfg.translator.source_language = args.source
+    cfg.translator.series = args.series
     if args.glossary:
         cfg.translator.glossary_path = args.glossary
     if args.save_glossary:
@@ -124,6 +126,7 @@ def cmd_library(args: argparse.Namespace) -> int:
 
     cfg = AppConfig()
     cfg.translator.target_language = args.target
+    cfg.translator.series = args.series
     provider = build_provider(cfg.provider) if args.translate else None
     engine = TranslationEngine(cfg, provider) if provider else None
     failures = 0
@@ -198,6 +201,72 @@ def cmd_library(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _load_series_for_cli(name: str) -> tuple[SeriesGlossary, Path]:
+    path = series_path(name, AppConfig().translator.series_dir)
+    return SeriesGlossary.load(path), path
+
+
+def cmd_glossary(args: argparse.Namespace) -> int:
+    directory = AppConfig().translator.series_dir
+    if args.action == "list":
+        names = list_series(directory)
+        if not names:
+            print("no series glossaries yet")
+            return 0
+        for n in names:
+            g, _ = _load_series_for_cli(n)
+            auto = sum(1 for r in g.terms.values() if r["origin"] == "auto")
+            print(f"{n}: {len(g.terms) - auto} confirmed, {auto} candidate(s)")
+        return 0
+    if not args.terms:
+        print(f"glossary {args.action} needs a series name", file=sys.stderr)
+        return 1
+    g, path = _load_series_for_cli(args.terms[0])
+    rest = args.terms[1:]
+    if args.action == "show":
+        if rest:
+            print("glossary show takes only a series name", file=sys.stderr)
+            return 1
+        if not g.terms:
+            print(f"{g.name}: empty")
+            return 0
+        for src in sorted(g.terms):
+            r = g.terms[src]
+            mark = "user" if r["origin"] == "user" else "candidate"
+            print(f"[{mark:9s} x{r['count']:<4d}] {src} -> {r['target']}")
+        return 0
+    if args.action == "set":
+        if len(rest) != 2:
+            print("usage: glossary set <series> <source> <target>", file=sys.stderr)
+            return 1
+        g.set_user(rest[0], rest[1])
+        g.save(path)
+        print(f"set: {rest[0]} -> {rest[1]} (user)")
+        return 0
+    if args.action == "confirm":
+        if not rest:
+            print("usage: glossary confirm <series> <source> [source ...]", file=sys.stderr)
+            return 1
+        missing = [s for s in rest if not g.confirm(s)]
+        g.save(path)
+        if missing:
+            print(f"not found: {', '.join(missing)}", file=sys.stderr)
+        print(f"confirmed {len(rest) - len(missing)} term(s) in {g.name}")
+        return 1 if missing else 0
+    if args.action == "delete":
+        if len(rest) != 1:
+            print("usage: glossary delete <series> <source>", file=sys.stderr)
+            return 1
+        if not g.delete(rest[0]):
+            print(f"not found: {rest[0]}", file=sys.stderr)
+            return 1
+        g.save(path)
+        print(f"deleted: {rest[0]}")
+        return 0
+    print(f"unknown glossary action: {args.action}", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="subkit")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -209,6 +278,7 @@ def main() -> int:
     t.add_argument("--target-code", default="fi")
     t.add_argument("--source", default=None)
     t.add_argument("--glossary", default=None, help="static per-series glossary JSON")
+    t.add_argument("--series", default=None, help="persistent series glossary name")
     t.add_argument(
         "--save-glossary", default=None, help="write the rolling glossary here after the run"
     )
@@ -255,8 +325,14 @@ def main() -> int:
         action="store_true",
         help="name output Name.fi.srt instead of Name.fi.generated.srt",
     )
+    li.add_argument("--series", default=None, help="persistent series glossary name")
     li.add_argument("--dry-run", action="store_true")
     li.set_defaults(func=cmd_library)
+
+    gl = sub.add_parser("glossary", help="inspect and edit persistent series glossaries")
+    gl.add_argument("action", choices=["list", "show", "set", "confirm", "delete"])
+    gl.add_argument("terms", nargs="*", metavar="ARG", help="series [source [target]]")
+    gl.set_defaults(func=cmd_glossary)
 
     args = ap.parse_args()
     logging.basicConfig(

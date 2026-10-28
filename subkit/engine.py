@@ -32,6 +32,7 @@ from subkit.glossary import Glossary
 from subkit.parser import Subtitle, SubtitleDocument
 from subkit.prompts import COMPRESSION_PROMPT, CORRECTION_PROMPT, SYSTEM_PROMPT
 from subkit.providers import ChatProvider, ProviderHTTPError
+from subkit.series import SeriesGlossary, series_path
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,21 @@ class TranslationEngine:
     def __init__(self, cfg: AppConfig, provider: ChatProvider) -> None:
         self.cfg = cfg
         self.provider = provider
-        self._glossary = (
-            Glossary.from_file(cfg.translator.glossary_path)
-            if cfg.translator.glossary_path
-            else Glossary()
-        )
+        # Persistent per-series terms load first (user terms and auto
+        # candidates); the static per-run glossary file overrides them.
+        self._series: SeriesGlossary | None = None
+        self._series_path: Path | None = None
+        if cfg.translator.series:
+            self._series_path = series_path(cfg.translator.series, cfg.translator.series_dir)
+            self._series = SeriesGlossary.load(self._series_path)
+        # Canonical glossary = user terms only; auto candidates go to the
+        # prompt under a separate, clearly labeled suggestion block.
+        self._candidate_terms: dict[str, str] = self._series.auto_entries() if self._series else {}
+        self._glossary = Glossary(self._series.user_entries()) if self._series else Glossary()
+        if cfg.translator.glossary_path:
+            static = Glossary.from_file(cfg.translator.glossary_path)
+            self._glossary.extend(static.entries, existing_wins=False)
+        self._run_new_terms: dict[str, str] = {}
         self._requests = 0
 
     @property
@@ -194,6 +205,12 @@ class TranslationEngine:
         parts = [f"TARGET LANGUAGE: {cfg.target_language}"]
         parts.append(f"SOURCE LANGUAGE: {cfg.source_language or 'auto-detect'}")
         parts.append(f"GLOSSARY: {json.dumps(self._glossary.entries, ensure_ascii=False)}")
+        if self._candidate_terms:
+            parts.append(
+                "SUGGESTED TERMS (auto-extracted candidates, NOT user-confirmed; "
+                "prefer them for consistency, but GLOSSARY above always wins):\n"
+                + json.dumps(self._candidate_terms, ensure_ascii=False)
+            )
         if full_transcript_block is not None:
             parts.append(full_transcript_block)
         elif context:
@@ -317,6 +334,7 @@ class TranslationEngine:
                     expect_ids,
                 )
                 if cfg.rolling_glossary and new_terms:
+                    self._run_new_terms.update(new_terms)
                     added = self._glossary.extend(new_terms)
                     if added:
                         logger.info("Chunk %d: rolling glossary +%d terms", idx, added)
@@ -385,6 +403,16 @@ class TranslationEngine:
         report.glossary = dict(self._glossary.entries)
         if cfg.rolling_glossary and cfg.rolling_glossary_save:
             self._glossary.save(cfg.rolling_glossary_save)
+        if self._series is not None and self._series_path is not None and self._run_new_terms:
+            added = self._series.merge_auto(self._run_new_terms)
+            if added:
+                logger.info(
+                    "Series %s: %d new candidate terms saved (review: subkit glossary show %s)",
+                    self._series.name,
+                    added,
+                    self._series.name,
+                )
+            self._series.save(self._series_path)
         return report
 
 
@@ -400,9 +428,10 @@ def _fingerprint(engine: TranslationEngine, doc: SubtitleDocument) -> str:
         f"|{cfg.target_language}|{cfg.source_language}"
         f"|{p.kind}|{p.model}|{p.base_url}|{p.thinking_level}".encode()
     )
+    series_rev = engine._series.revision() if engine._series is not None else ""
     h.update(
         f"|{json.dumps(engine._glossary.entries, sort_keys=True, ensure_ascii=False)}"
-        f"|{SYSTEM_PROMPT}".encode()
+        f"|{SYSTEM_PROMPT}|{series_rev}".encode()
     )
     return h.hexdigest()
 
