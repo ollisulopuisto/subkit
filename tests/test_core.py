@@ -570,3 +570,61 @@ def test_full_transcript_serialized_once(monkeypatch):
     assert calls["n"] <= 2 * n_chunks + 2, (
         f"{calls['n']} dumps for {n_chunks} chunks suggests per-chunk transcript serialization"
     )
+
+
+def test_resume_preserves_incomplete_warning(tmp_path):
+    import asyncio
+
+    c = cfg(status_dir=str(tmp_path))
+    dropped = make_doc().subtitles[1].id
+    first = asyncio.run(
+        TranslationEngine(c, MockProvider(drop_ids={dropped})).translate_document(
+            make_doc(), resume_id="movie.srt"
+        )
+    )
+    provider = MockProvider()
+    resumed = asyncio.run(
+        TranslationEngine(c, provider).translate_document(make_doc(), resume_id="movie.srt")
+    )
+    assert not first.ok
+    assert provider.calls == []
+    assert resumed.dropped_ids == first.dropped_ids
+    assert not resumed.ok
+
+
+def test_resume_restores_reading_speed_warnings(tmp_path):
+    import asyncio
+
+    c = cfg(status_dir=str(tmp_path), cps_target=0.01, cps_min_chars=1)
+    first = asyncio.run(
+        TranslationEngine(c, MockProvider()).translate_document(make_doc(), resume_id="movie.srt")
+    )
+    provider = MockProvider()
+    resumed = asyncio.run(
+        TranslationEngine(c, provider).translate_document(make_doc(), resume_id="movie.srt")
+    )
+    assert first.cps_violations
+    assert resumed.cps_violations == first.cps_violations
+    assert provider.calls == []
+
+
+def test_legacy_resume_without_report_evidence_is_not_claimed_complete(tmp_path):
+    import asyncio
+
+    c = cfg(status_dir=str(tmp_path))
+    asyncio.run(
+        TranslationEngine(c, MockProvider(drop_ids={2})).translate_document(
+            make_doc(), resume_id="movie.srt"
+        )
+    )
+    state = tmp_path / "movie.srt.subkit-status.json"
+    data = json.loads(state.read_text())
+    for key in ("version", "dropped_ids", "cps_violations"):
+        data.pop(key)
+    state.write_text(json.dumps(data))
+    provider = MockProvider(drop_ids={2})
+    with pytest.raises(RuntimeError, match="Legacy resume state"):
+        asyncio.run(
+            TranslationEngine(c, provider).translate_document(make_doc(), resume_id="movie.srt")
+        )
+    assert provider.calls == []
