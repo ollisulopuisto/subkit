@@ -279,6 +279,9 @@ class TranslationEngine:
         if state_path and cfg.resume_mode == "auto":
             done_chunks, results = _load_state(state_path, fingerprint)
             if done_chunks:
+                saved_report = json.loads(state_path.read_text(encoding="utf-8"))
+                report.dropped_ids = list(saved_report.get("dropped_ids", []))
+                report.cps_violations = list(saved_report.get("cps_violations", []))
                 logger.info("Resuming: %d chunks already done", len(done_chunks))
             saved_glossary = _load_state_glossary(state_path, fingerprint)
             if saved_glossary:
@@ -386,7 +389,15 @@ class TranslationEngine:
             report.chunks_done += 1
             done_chunks.add(idx)
             if state_path:
-                _save_state(state_path, fingerprint, done_chunks, results, self._glossary.entries)
+                _save_state(
+                    state_path,
+                    fingerprint,
+                    done_chunks,
+                    results,
+                    self._glossary.entries,
+                    report.dropped_ids,
+                    report.cps_violations,
+                )
             logger.info("Chunk %d/%d done", idx + 1, report.chunks_total)
 
         report.subtitles = [
@@ -449,7 +460,17 @@ def _load_state(path: Path, fingerprint: str) -> tuple[set[int], dict[int, str]]
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return set(), {}
-    if data.get("fingerprint") != fingerprint:
+    if (
+        data.get("fingerprint") == fingerprint
+        and data.get("version") != 2
+        and data.get("done_chunks")
+    ):
+        raise RuntimeError(
+            "Legacy resume state lacks incomplete-cue evidence. Refusing to claim "
+            "completion or make new provider calls. Keep the existing output, or "
+            "set RESUME_MODE=fresh deliberately to translate again."
+        )
+    if data.get("version") != 2 or data.get("fingerprint") != fingerprint:
         if data:
             logger.warning(
                 "Ignoring stale status file %s: source text or translation "
@@ -468,7 +489,7 @@ def _load_state_glossary(path: Path, fingerprint: str) -> dict[str, str]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
-    if data.get("fingerprint") != fingerprint:
+    if data.get("version") != 2 or data.get("fingerprint") != fingerprint:
         return {}
     return {str(k): str(v) for k, v in (data.get("glossary") or {}).items()}
 
@@ -479,11 +500,16 @@ def _save_state(
     done_chunks: set[int],
     results: dict[int, str],
     glossary: dict[str, str],
+    dropped_ids: list[int],
+    cps_violations: list[int],
 ) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(
         json.dumps(
             {
+                "version": 2,
+                "dropped_ids": dropped_ids,
+                "cps_violations": cps_violations,
                 "fingerprint": fingerprint,
                 "done_chunks": sorted(done_chunks),
                 "translations": {str(k): v for k, v in results.items()},

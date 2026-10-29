@@ -50,3 +50,17 @@ All three must pass for the build to go green.
 
 Tests live in `tests/` and use plain `pytest` with a mock provider — no API keys, no
 model downloads, no network. See `tests/test_core.py` for the mock provider pattern.
+
+## Audit follow-through, 2026-10-29
+
+Mock-provider resume regression: a dropped cue was correctly INCOMPLETE on the
+first run, then reported complete on a zero-call resume because status saved
+only text, not warning IDs. Version2 status preserves dropped IDs and CPS
+warnings across resume. Legacy matching state without report evidence refuses before new provider
+requests and explains keeping existing output or deliberately setting
+RESUME_MODE=fresh to translate again. No live API calls were made to validate this change.
+
+Baseline53tests, RED on missing resumed warning, final56tests pass. Ruff lint
+and all22files format-check pass. Real provider/ASR/MLX/container acceptance
+remains unverified. Human merge pending. This does not make incomplete chunks
+automatically retry: it preserves their honest warning on zero-call resume.
