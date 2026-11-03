@@ -9,7 +9,7 @@ from subkit.config import AppConfig
 from subkit.engine import TranslationEngine, translate_document_sync
 from subkit.jellyfin import categorize_item, plan_library, sidecar_path, write_sidecar_atomic
 from subkit.merger import format_srt
-from subkit.parser import Subtitle, SubtitleDocument, parse_srt_content
+from subkit.parser import Subtitle, SubtitleDocument, parse_ass, parse_srt_content
 
 SRT = """1
 00:00:01,000 --> 00:00:03,000
@@ -80,6 +80,35 @@ def test_parser_roundtrip():
     assert len(subs) == 4
     assert subs[0].start_ms == 1000 and subs[0].end_ms == 3000
     assert subs[3].text == "The hyperdrive is broken, captain."
+
+
+def test_parse_ass(tmp_path):
+    ass_file = tmp_path / "test.ass"
+    ass_content = """[Script Info]
+Title: Sample
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,Speaker,0,0,0,,Hello world\\NSecond line
+Dialogue: 0,0:00:04.50,0:00:06.00,Default,,0,0,0,,No speaker
+"""
+    ass_file.write_text(ass_content, encoding="utf-8")
+    doc = parse_ass(ass_file)
+    assert doc.format == "ass"
+    assert len(doc.subtitles) == 2
+    assert doc.subtitles[0].id == 1
+    assert doc.subtitles[0].start == "0:00:01.00"
+    assert doc.subtitles[0].end == "0:00:03.00"
+    assert doc.subtitles[0].speaker == "Speaker"
+    assert doc.subtitles[0].text == "Hello world\nSecond line"
+    assert (
+        doc.subtitles[0].metadata["ass_prefix"]
+        == "Dialogue: 0,0:00:01.00,0:00:03.00,Default,Speaker,0,0,0,,"
+    )
+    assert doc.subtitles[0].metadata["ass_newline_token"] == "\\N"
+    assert doc.subtitles[1].speaker is None
+    assert doc.subtitles[1].text == "No speaker"
 
 
 def test_chunker_splits_on_time_gap():
