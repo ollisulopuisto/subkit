@@ -657,3 +657,25 @@ def test_legacy_resume_without_report_evidence_is_not_claimed_complete(tmp_path)
             TranslationEngine(c, provider).translate_document(make_doc(), resume_id="movie.srt")
         )
     assert provider.calls == []
+
+
+def test_classify_lines():
+    from subkit.classify import LineKind, classify
+
+    assert classify("") == LineKind.DIALOG
+    assert classify("   ") == LineKind.DIALOG
+    assert classify("Hello, how are you?") == LineKind.DIALOG
+    assert classify("Short") == LineKind.DIALOG
+    assert classify("12345") == LineKind.DIALOG
+    assert classify("[door slams]") == LineKind.SOUND_CUE
+    assert classify("  [applause]  ") == LineKind.SOUND_CUE
+    assert classify("[unfinished sound cue") == LineKind.DIALOG
+    assert classify("(whispering softly)") == LineKind.STAGE_DIR
+    assert classify("  (sighs)  ") == LineKind.STAGE_DIR
+    assert classify("(unfinished stage dir") == LineKind.DIALOG
+    assert classify("♪ lalala ♪") == LineKind.LYRICS
+    assert classify("♪ music playing") == LineKind.LYRICS
+    assert classify("# singing a song #") == LineKind.LYRICS
+    assert classify("CHAPTER 1") == LineKind.SCREEN_TEXT
+    assert classify("ALL CAPS TITLE SCREEN") == LineKind.SCREEN_TEXT
+    assert classify("OK") == LineKind.DIALOG
