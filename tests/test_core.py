@@ -1,13 +1,20 @@
 """Core tests with a mock provider - no API calls, no model downloads."""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from subkit.chunker import build_context_window, chunk_subtitles
 from subkit.config import AppConfig
 from subkit.engine import TranslationEngine, translate_document_sync
-from subkit.jellyfin import categorize_item, plan_library, sidecar_path, write_sidecar_atomic
+from subkit.jellyfin import (
+    categorize_item,
+    plan_library,
+    sidecar_covers_lang,
+    sidecar_path,
+    write_sidecar_atomic,
+)
 from subkit.merger import format_srt
 from subkit.parser import Subtitle, SubtitleDocument, parse_ass, parse_srt_content
 
@@ -679,3 +686,27 @@ def test_classify_lines():
     assert classify("CHAPTER 1") == LineKind.SCREEN_TEXT
     assert classify("ALL CAPS TITLE SCREEN") == LineKind.SCREEN_TEXT
     assert classify("OK") == LineKind.DIALOG
+
+
+def test_sidecar_covers_lang():
+    video = Path("/media/Show.S01E01.1080p.mkv")
+    sidecars = [
+        Path("/media/Show.S01E01.1080p.en.srt"),
+        Path("/media/Show.S01E01.1080p.fi.generated.srt"),
+        Path("/media/Show.S01E01.1080p.forced.sv.ass"),
+    ]
+
+    # Matching standard code
+    assert sidecar_covers_lang(video, "fi", sidecars) == sidecars[1]
+    assert sidecar_covers_lang(video, "FI", sidecars) == sidecars[1]
+    assert sidecar_covers_lang(video, "en", sidecars) == sidecars[0]
+    assert sidecar_covers_lang(video, "EN", sidecars) == sidecars[0]
+    assert sidecar_covers_lang(video, "sv", sidecars) == sidecars[2]
+    assert sidecar_covers_lang(video, "SV", sidecars) == sidecars[2]
+
+    # Non-matching language
+    assert sidecar_covers_lang(video, "de", sidecars) is None
+    assert sidecar_covers_lang(video, "fr", sidecars) is None
+
+    # Empty sidecar list
+    assert sidecar_covers_lang(video, "fi", []) is None
