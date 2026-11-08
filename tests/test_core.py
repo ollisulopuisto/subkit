@@ -286,6 +286,34 @@ def test_plan_library(tmp_path, monkeypatch):
     assert [p.name for p in plan.skipped] == ["c.mkv"]
 
 
+def test_plan_library_discovery_edge_cases(tmp_path, monkeypatch):
+    """Ensure directory traversal safely ignores non-files and non-video entries."""
+    monkeypatch.setattr("subkit.jellyfin.embedded_sub_langs", lambda v: set())
+
+    # 1. Directory named with video extension (e.g. 'series.mkv')
+    dir_with_ext = tmp_path / "series.mkv"
+    dir_with_ext.mkdir()
+    (dir_with_ext / "ep01.mp4").write_bytes(b"")
+
+    # 2. Broken symlink matching video extension
+    broken_link = tmp_path / "broken.mkv"
+    broken_link.symlink_to(tmp_path / "nonexistent.mkv")
+
+    # 3. File without an extension
+    (tmp_path / "no_extension").write_bytes(b"")
+
+    # 4. Valid video with uppercase extension
+    (tmp_path / "movie.MKV").write_bytes(b"")
+
+    plan = plan_library(tmp_path, "fi")
+    # Only genuine regular video files should be discovered
+    discovered = {p.name for p in plan.transcribe + plan.translate + plan.skipped}
+    assert discovered == {"ep01.mp4", "movie.MKV"}
+    assert "series.mkv" not in discovered
+    assert "broken.mkv" not in discovered
+    assert "no_extension" not in discovered
+
+
 def test_full_transcript_context_sent():
     provider = MockProvider()
     doc = make_doc()

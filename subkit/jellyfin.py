@@ -210,10 +210,12 @@ def plan_library(
     # `Path` objects and running `is_file()` stat calls on non-video files (subtitles, artwork, metadata),
     # yielding ~1.47x faster video discovery and ~1.15x faster overall library planning.
     video_paths = [
-        Path(dirpath) / fname
+        p
         for dirpath, _, filenames in os.walk(root)
         for fname in filenames
-        if (dot := fname.rfind(".")) != -1 and fname[dot:].lower() in VIDEO_EXTENSIONS
+        if (dot := fname.rfind(".")) != -1
+        and fname[dot:].lower() in VIDEO_EXTENSIONS
+        and (p := Path(dirpath) / fname).is_file()
     ]
     video_paths.sort()
     for path in video_paths:
