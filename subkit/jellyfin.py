@@ -213,7 +213,7 @@ def plan_library(
         Path(dirpath) / fname
         for dirpath, _, filenames in os.walk(root)
         for fname in filenames
-        if fname.rfind(".") != -1 and fname[fname.rfind(".") :].lower() in VIDEO_EXTENSIONS
+        if (dot := fname.rfind(".")) != -1 and fname[dot:].lower() in VIDEO_EXTENSIONS
     ]
     video_paths.sort()
     for path in video_paths:
