@@ -738,3 +738,39 @@ def test_sidecar_covers_lang():
 
     # Empty sidecar list
     assert sidecar_covers_lang(video, "fi", []) is None
+
+
+def test_ass_tags():
+    from subkit.ass_tags import has_tags, restore_tags, strip_tags
+
+    plain = "Hello, world! Normal dialogue line."
+    assert not has_tags(plain)
+    clean, tags = strip_tags(plain)
+    assert clean == plain
+    assert tags == []
+    assert restore_tags(clean, tags, len(clean)) == plain
+
+    # Inline tags
+    tagged_inline = r"{\i1}Italic text{\i0} and {\b1}bold{\b0}"
+    assert has_tags(tagged_inline)
+    clean, tags = strip_tags(tagged_inline)
+    assert clean == "Italic text and bold"
+    assert len(tags) == 4
+    restored = restore_tags(clean, tags, len(clean))
+    assert restored == tagged_inline
+
+    # Positional tags
+    tagged_pos = r"{\an8}{\pos(100,200)}Title line"
+    assert has_tags(tagged_pos)
+    clean, tags = strip_tags(tagged_pos)
+    assert clean == "Title line"
+    assert len(tags) == 2
+    assert restore_tags(clean, tags, len(clean)) == tagged_pos
+
+    # Mixed tags (positional tags at start, inline tags in body)
+    mixed = r"{\an8}{\pos(100,200)}{\i1}Italic title{\i0}"
+    clean, tags = strip_tags(mixed)
+    assert clean == "Italic title"
+    restored = restore_tags("Kursivoitu otsikko", tags, len(clean))
+    assert restored.startswith(r"{\an8}{\pos(100,200)}")
+    assert r"{\i1}" in restored and r"{\i0}" in restored
