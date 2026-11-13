@@ -253,6 +253,40 @@ def test_categorize_matrix(tmp_path, monkeypatch):
     assert sidecar_path(v, "fi").name == "Movie (2020).fi.generated.srt"
 
 
+def test_categorize_builds_the_generated_sidecar_path_only_when_forced_over_a_sidecar(
+    tmp_path, monkeypatch
+):
+    """The generated-sidecar path is the slow part; it is only needed for --force
+    when a sidecar already covers the target language."""
+    from subkit import jellyfin
+
+    monkeypatch.setattr(jellyfin, "embedded_sub_langs", lambda v: set())
+    calls = []
+    real = jellyfin.sidecar_path
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(jellyfin, "sidecar_path", spy)
+    v = tmp_path / "Movie (2020).mkv"
+    v.write_bytes(b"")
+
+    # no target sidecar: neither mode needs the path
+    assert categorize_item(v, "fi") == "transcribe"
+    assert categorize_item(v, "fi", force=True) == "transcribe"
+    assert calls == []
+
+    # a covering sidecar without --force decides "skip" without it
+    (tmp_path / "Movie (2020).fi.srt").write_text("x", encoding="utf-8")
+    assert categorize_item(v, "fi") == "skip"
+    assert calls == []
+
+    # --force over a covering sidecar must compare against the generated name
+    assert categorize_item(v, "fi", force=True) == "skip"
+    assert len(calls) == 1
+
+
 def test_sidecar_write_protection(tmp_path):
     video = tmp_path / "Film.mkv"
     video.write_bytes(b"")
