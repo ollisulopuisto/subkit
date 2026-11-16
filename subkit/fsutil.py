@@ -40,7 +40,10 @@ def write_text_atomic(path: str | Path, content: str, encoding: str = "utf-8") -
         if st is not None:
             os.chmod(fd, stat.S_IMODE(st.st_mode))
             try:
-                os.chown(tmp, -1, st.st_gid)
+                # fchown on the fd, not the path: in a shared directory the
+                # temp name could be swapped for a symlink between mkstemp and
+                # chown, and path-based chown would follow it to a victim file.
+                os.fchown(fd, -1, st.st_gid)
             except OSError:
                 pass  # not a member of the destination's group
         else:
