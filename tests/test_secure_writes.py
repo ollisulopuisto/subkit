@@ -95,6 +95,7 @@ def test_glossary_save_does_not_follow_symlink(tmp_path):
 def test_atomic_write_preserves_existing_file_mode(tmp_path):
     """An existing destination keeps its own permissions after a rewrite."""
     import stat as _stat
+
     from subkit.fsutil import write_text_atomic
 
     path = tmp_path / "out.srt"
@@ -108,6 +109,7 @@ def test_atomic_write_preserves_existing_file_mode(tmp_path):
 def test_atomic_write_new_file_is_world_readable(tmp_path):
     """New outputs get 0644 so media servers (other local users) can read them."""
     import stat as _stat
+
     from subkit.fsutil import write_text_atomic
 
     path = tmp_path / "new.srt"
@@ -118,6 +120,7 @@ def test_atomic_write_new_file_is_world_readable(tmp_path):
 def test_atomic_write_planted_symlink_gets_default_mode(tmp_path):
     """A replaced symlink must not leak the victim's mode onto the new file."""
     import stat as _stat
+
     from subkit.fsutil import write_text_atomic
 
     victim = tmp_path / "victim.txt"
@@ -129,3 +132,17 @@ def test_atomic_write_planted_symlink_gets_default_mode(tmp_path):
     assert not out.is_symlink()
     assert _stat.S_IMODE(out.stat().st_mode) == 0o644
     assert victim.read_text(encoding="utf-8") == "USER DATA"
+
+
+def test_atomic_write_refuses_read_only_destination(tmp_path):
+    """A read-only existing file must keep its protection (Path.write_text parity)."""
+    import pytest
+
+    from subkit.fsutil import write_text_atomic
+
+    path = tmp_path / "out.srt"
+    path.write_text("protected", encoding="utf-8")
+    path.chmod(0o444)
+    with pytest.raises(PermissionError):
+        write_text_atomic(path, "new")
+    assert path.read_text(encoding="utf-8") == "protected"
