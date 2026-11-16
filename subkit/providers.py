@@ -12,6 +12,7 @@ the reply text. HTTP errors raise; the engine owns retry policy.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Protocol
 
 import httpx
@@ -22,13 +23,33 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
+# Provider/proxy error bodies are untrusted text: providers are known to echo
+# the credential back in the message (OpenAI's 401 includes the key, sometimes
+# truncated/obfuscated). Redact credential-shaped runs before the body can
+# reach logs or tracebacks via ProviderHTTPError.
+_CREDENTIAL_RE = re.compile(
+    r"\b(?:sk-|AIza|gsk_)[A-Za-z0-9_*-]{6,}"
+    r"|(?i:\bBearer\s+[A-Za-z0-9._~+/*-]{6,})"
+    r"|(?i:\bx-goog-api-key\s*[:=]\s*\S+)"
+    r"|(?i:\bX-Emby-Token\s*[:=]\s*\S+)"
+)
+
+
+def _redact_credentials(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """Strip the app's own secrets and credential-shaped runs from error text."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return _CREDENTIAL_RE.sub("[REDACTED]", text)
+
 
 class ProviderHTTPError(RuntimeError):
     """HTTP error from a provider. `status_code` lets the engine tell permanent
     4xx (never retried) from transient 429/5xx (retried with backoff)."""
 
-    def __init__(self, status_code: int, detail: str) -> None:
-        super().__init__(f"provider HTTP {status_code}: {detail[:500]}")
+    def __init__(self, status_code: int, detail: str, secrets: tuple[str, ...] = ()) -> None:
+        safe = _redact_credentials(detail, secrets)
+        super().__init__(f"provider HTTP {status_code}: {safe[:500]}")
         self.status_code = status_code
 
     @property
@@ -129,7 +150,11 @@ class GeminiProvider:
         client = await self._clients.get()
         resp = await client.post(url, json=body, headers={"x-goog-api-key": cfg.api_key})
         if resp.status_code != 200:
-            raise ProviderHTTPError(resp.status_code, f"Gemini API: {resp.text}")
+            raise ProviderHTTPError(
+                resp.status_code,
+                f"Gemini API: {resp.text}",
+                secrets=(cfg.api_key,) if cfg.api_key else (),
+            )
         data = resp.json()
         candidate = (data.get("candidates") or [{}])[0]
         parts = (candidate.get("content") or {}).get("parts") or []
@@ -169,7 +194,11 @@ class OpenAIProvider:
         client = await self._clients.get()
         resp = await client.post(self._url, json=body, headers=headers)
         if resp.status_code != 200:
-            raise ProviderHTTPError(resp.status_code, f"OpenAI-compatible API: {resp.text}")
+            raise ProviderHTTPError(
+                resp.status_code,
+                f"OpenAI-compatible API: {resp.text}",
+                secrets=(cfg.api_key,) if cfg.api_key else (),
+            )
         data = resp.json()
         text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if not text.strip():
