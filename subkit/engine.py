@@ -28,6 +28,7 @@ from pathlib import Path
 from subkit.chunker import build_context_window, chunk_subtitles
 from subkit.classify import LineKind, classify
 from subkit.config import AppConfig
+from subkit.fsutil import write_text_atomic
 from subkit.glossary import Glossary
 from subkit.parser import Subtitle, SubtitleDocument
 from subkit.prompts import COMPRESSION_PROMPT, CORRECTION_PROMPT, SYSTEM_PROMPT
@@ -503,8 +504,10 @@ def _save_state(
     dropped_ids: list[int],
     cps_violations: list[int],
 ) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
+    # Never open a predictable temp path directly: a planted symlink there
+    # would be followed and its target overwritten (see subkit.fsutil).
+    write_text_atomic(
+        path,
         json.dumps(
             {
                 "version": 2,
@@ -517,9 +520,7 @@ def _save_state(
             },
             ensure_ascii=False,
         ),
-        encoding="utf-8",
     )
-    tmp.replace(path)
 
 
 def translate_document_sync(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from subkit.fsutil import write_text_atomic
 from subkit.parser import Subtitle, SubtitleDocument
 
 
@@ -37,4 +38,6 @@ def write_subtitle_file(
     document: SubtitleDocument, subtitles: list[Subtitle], path: str | Path
 ) -> None:
     content = format_ass(document, subtitles) if document.format == "ass" else format_srt(subtitles)
-    Path(path).write_text(content, encoding="utf-8")
+    # Never open the destination directly: a planted symlink must be replaced,
+    # not followed (see subkit.fsutil.write_text_atomic).
+    write_text_atomic(path, content)
