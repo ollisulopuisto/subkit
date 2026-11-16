@@ -16,6 +16,8 @@ import json
 import logging
 from pathlib import Path
 
+from subkit.fsutil import write_text_atomic
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +71,7 @@ class Glossary:
         return violations
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(
+        write_text_atomic(
+            path,
             json.dumps(self._entries, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
         )
