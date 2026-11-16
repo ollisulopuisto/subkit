@@ -19,6 +19,11 @@ def write_text_atomic(path: str | Path, content: str, encoding: str = "utf-8") -
     target = Path(path)
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".subkit-", suffix=".tmp")
     try:
+        # mkstemp forces mode 0600; the renamed file would be unreadable to
+        # other users on a shared media library (e.g. a Jellyfin service
+        # account). Give the output the same 0644 a normal create gets under a
+        # typical umask instead of keeping the restrictive temp-file mode.
+        os.chmod(fd, 0o644)
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             fh.write(content)
         os.replace(tmp, target)
