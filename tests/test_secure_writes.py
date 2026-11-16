@@ -90,3 +90,42 @@ def test_glossary_save_does_not_follow_symlink(tmp_path):
     assert not path.is_symlink()
     assert json.loads(path.read_text(encoding="utf-8")) == {"Shire": "Kontu"}
     assert list(tmp_path.glob(".subkit-*")) == []
+
+
+def test_atomic_write_preserves_existing_file_mode(tmp_path):
+    """An existing destination keeps its own permissions after a rewrite."""
+    import stat as _stat
+    from subkit.fsutil import write_text_atomic
+
+    path = tmp_path / "out.srt"
+    path.write_text("old", encoding="utf-8")
+    path.chmod(0o660)
+    write_text_atomic(path, "new")
+    assert _stat.S_IMODE(path.stat().st_mode) == 0o660
+    assert path.read_text(encoding="utf-8") == "new"
+
+
+def test_atomic_write_new_file_is_world_readable(tmp_path):
+    """New outputs get 0644 so media servers (other local users) can read them."""
+    import stat as _stat
+    from subkit.fsutil import write_text_atomic
+
+    path = tmp_path / "new.srt"
+    write_text_atomic(path, "data")
+    assert _stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+def test_atomic_write_planted_symlink_gets_default_mode(tmp_path):
+    """A replaced symlink must not leak the victim's mode onto the new file."""
+    import stat as _stat
+    from subkit.fsutil import write_text_atomic
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("USER DATA", encoding="utf-8")
+    victim.chmod(0o600)
+    out = tmp_path / "out.srt"
+    out.symlink_to(victim)
+    write_text_atomic(out, "new")
+    assert not out.is_symlink()
+    assert _stat.S_IMODE(out.stat().st_mode) == 0o644
+    assert victim.read_text(encoding="utf-8") == "USER DATA"
