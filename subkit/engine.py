@@ -223,16 +223,30 @@ class TranslationEngine:
         return "\n".join(parts)
 
     async def _compress_lines(
-        self, by_id: dict[int, Subtitle], translated: dict[int, str], over: list[int]
+        self,
+        by_id: dict[int, Subtitle],
+        translated: dict[int, str],
+        over: list[int],
+        budgets: dict[int, int] | None = None,
     ) -> dict[int, str]:
-        """One targeted retry asking the model to shorten over-budget lines."""
+        """One targeted retry asking the model to shorten over-budget lines.
+
+        `budgets` (id -> max_chars) is precomputed once per chunk so the
+        duration division in _char_budget is not repeated per over-budget line.
+        """
         cfg = self.cfg.translator
+
+        def budget_for(i: int) -> int:
+            if budgets is not None and i in budgets:
+                return budgets[i]
+            return _char_budget(by_id[i], cfg.cps_target, cfg.cps_min_chars)
+
         lines = json.dumps(
             [
                 {
                     "id": i,
                     "text": translated[i],
-                    "max_chars": _char_budget(by_id[i], cfg.cps_target, cfg.cps_min_chars),
+                    "max_chars": budget_for(i),
                 }
                 for i in over
             ],
@@ -310,6 +324,13 @@ class TranslationEngine:
                 report.chunks_done += 1
                 continue
             kinds = [classify(s.text) for s in chunk]
+            # Precompute CPS char budgets once per chunk instead of recomputing
+            # _char_budget (a duration division per call) up to four times per
+            # subtitle across payload building, the over-budget check, the
+            # still-over check, and the compression retry.
+            budgets: dict[int, int] = {}
+            if cfg.enforce_cps:
+                budgets = {s.id: _char_budget(s, cfg.cps_target, cfg.cps_min_chars) for s in chunk}
             payload: list[dict] = []
             for s, kind in zip(chunk, kinds, strict=False):
                 if (
@@ -322,7 +343,7 @@ class TranslationEngine:
                 if kind != LineKind.DIALOG:
                     item["kind"] = kind.value
                 if cfg.enforce_cps:
-                    item["max_chars"] = _char_budget(s, cfg.cps_target, cfg.cps_min_chars)
+                    item["max_chars"] = budgets[s.id]
                 payload.append(item)
 
             if payload:
@@ -355,18 +376,14 @@ class TranslationEngine:
                     over = [
                         pid
                         for pid in expect_ids
-                        if len(translated[pid])
-                        > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars)
-                        * cfg.cps_tolerance
+                        if len(translated[pid]) > budgets[pid] * cfg.cps_tolerance
                     ]
                     if over:
-                        translated = await self._compress_lines(by_id, translated, over)
+                        translated = await self._compress_lines(by_id, translated, over, budgets)
                         still = [
                             pid
                             for pid in over
-                            if len(translated[pid])
-                            > _char_budget(by_id[pid], cfg.cps_target, cfg.cps_min_chars)
-                            * cfg.cps_tolerance
+                            if len(translated[pid]) > budgets[pid] * cfg.cps_tolerance
                         ]
                         report.cps_violations.extend(still)
 

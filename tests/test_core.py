@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import call, patch
 
 import pytest
 
@@ -178,6 +179,66 @@ def test_payload_has_cps_budget():
     payload = json.loads(user.split("SEGMENTS:\n", 1)[1])
     assert all("max_chars" in p for p in payload)
     assert payload[0]["max_chars"] >= 20
+
+
+@pytest.mark.parametrize("enforce_cps", [True, False], ids=["cps-on", "cps-off"])
+def test_char_budget_computed_once_per_cue_through_compression(enforce_cps):
+    from subkit.engine import _char_budget
+
+    class CompressionProvider(MockProvider):
+        async def chat(self, system, messages):
+            self.calls.append({"system": system, "messages": messages})
+            user = messages[-1]["content"]
+            translating = "SEGMENTS:\n" in user
+            lines = json.loads(
+                user.split("SEGMENTS:\n", 1)[1] if translating else user.rsplit("\n", 1)[1]
+            )
+            segments = [
+                {"id": line["id"], "text": "x" * 80 if translating or line["id"] == 2 else "OK"}
+                for line in lines
+            ]
+            return "<translation>" + json.dumps({"segments": segments}) + "</translation>"
+
+    doc = make_doc()
+    provider = CompressionProvider()
+    c = cfg(
+        enforce_cps=enforce_cps,
+        translate_cues=True,
+        cps_target=5.0,
+        cps_min_chars=5,
+        cps_tolerance=1.0,
+        full_context=False,
+    )
+    with patch("subkit.engine._char_budget", wraps=_char_budget) as budget:
+        report = translate_document_sync(doc, c, provider)
+
+    assert report.ok
+    assert report.chunks_done == report.chunks_total == 2
+    translation_payloads = []
+    compression_payloads = []
+    for request in provider.calls:
+        user = request["messages"][-1]["content"]
+        if "SEGMENTS:\n" in user:
+            translation_payloads.extend(json.loads(user.split("SEGMENTS:\n", 1)[1]))
+        else:
+            compression_payloads.extend(json.loads(user.rsplit("\n", 1)[1]))
+    assert [p["id"] for p in translation_payloads] == [s.id for s in doc.subtitles]
+    if enforce_cps:
+        # Check exact cues, not just a total that could hide duplicate/missing work.
+        assert budget.call_args_list == [call(s, 5.0, 5) for s in doc.subtitles]
+        expected_budgets = {1: 10, 2: 7, 3: 10, 4: 10}
+        assert {p["id"]: p["max_chars"] for p in translation_payloads} == expected_budgets
+        assert {p["id"]: p["max_chars"] for p in compression_payloads} == expected_budgets
+        assert len(provider.calls) == 4
+        assert [s.text for s in report.subtitles] == ["OK", "x" * 80, "OK", "OK"]
+        assert report.cps_violations == [2]
+    else:
+        budget.assert_not_called()
+        assert all("max_chars" not in p for p in translation_payloads)
+        assert compression_payloads == []
+        assert len(provider.calls) == 2
+        assert all(s.text == "x" * 80 for s in report.subtitles)
+        assert report.cps_violations == []
 
 
 def test_gemini_request_shape(monkeypatch):
